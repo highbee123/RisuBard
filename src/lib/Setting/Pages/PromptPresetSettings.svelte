@@ -4,6 +4,7 @@
     import PresetHeader from "src/lib/UI/GUI/PresetHeader.svelte";
     import ShAlert from "src/lib/UI/GUI/ShAlert.svelte";
     import SettingRenderer from "../SettingRenderer.svelte";
+    import PromptV2Workspace from "./PromptPreset/PromptV2Workspace.svelte";
     import { InfoIcon } from "@lucide/svelte";
     import { language } from "src/lang";
     import {
@@ -27,6 +28,9 @@
 <SettingPage
     title={language.settingsWorkspace.aiWorkspace.sections['chat-prompt-presets'].title}
     description={language.settingsWorkspace.aiWorkspace.sections['chat-prompt-presets'].description}
+    resizable={$PromptPresetSubmenuIndex === 2}
+    wide={$PromptPresetSubmenuIndex === 2}
+    unboundedHeight={$PromptPresetSubmenuIndex === 2}
 >
     <PresetHeader
         label={language.currentPromptPreset}
@@ -37,8 +41,9 @@
         tabs={[
             { label: language.basicInfo, value: 0 },
             { label: language.prompt, value: 1 },
-            { label: language.parameters, value: 2 },
-            { label: language.advancedSettings, value: 3 },
+            { label: language.promptV2.tab, value: 2 },
+            { label: language.parameters, value: 3 },
+            { label: language.advancedSettings, value: 4 },
         ]}
         bind:selected={$PromptPresetSubmenuIndex}
         variant="prominent"
@@ -49,12 +54,14 @@
     {:else if $PromptPresetSubmenuIndex === 1}
         <SettingRenderer items={promptPresetPromptItems} />
     {:else if $PromptPresetSubmenuIndex === 2}
+        <PromptV2Workspace />
+    {:else if $PromptPresetSubmenuIndex === 3}
         <ShAlert className="mt-4 mb-2">
             {#snippet icon()}<InfoIcon />{/snippet}
             {language.promptPresetParamScopeDesc}
         </ShAlert>
         <SettingRenderer items={promptPresetParameterItems} layout="block" />
-    {:else if $PromptPresetSubmenuIndex === 3}
+    {:else if $PromptPresetSubmenuIndex === 4}
         <SettingRenderer items={promptPresetAdvancedItems} />
     {/if}
 </SettingPage>

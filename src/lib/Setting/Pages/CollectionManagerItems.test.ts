@@ -67,7 +67,7 @@ describe('collection manager item layout', () => {
     })
 
     test('lets the extension manager resize from every edge within the settings viewport', () => {
-        expect(settingPage).toContain('<ManagerResizeHandles target={pageElement} centered />')
+        expect(settingPage).toContain('<ManagerResizeHandles target={pageElement} centered {unboundedHeight} />')
         expect(settingPage).toMatch(/\.settings-standard-page--resizable\s*\{[^}]*left:\s*50%[^}]*align-self:\s*center[^}]*transform:\s*translateX\(-50%\)[^}]*max-width:\s*calc\(100vw - 1rem\)/s)
         expect(resizeHandles).toContain("closest<HTMLElement>('.settings-content')")
         expect(resizeHandles).toContain("['n', 'e', 's', 'w', 'ne', 'se', 'sw', 'nw']")
