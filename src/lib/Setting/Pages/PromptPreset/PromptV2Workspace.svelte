@@ -10,6 +10,7 @@
         SlidersHorizontalIcon,
     } from '@lucide/svelte'
     import { language } from 'src/lang'
+    import { tick } from 'svelte'
     import { DBState } from 'src/ts/stores.svelte'
     import type { PromptItem } from 'src/ts/process/prompt'
     import {
@@ -35,6 +36,13 @@
     let compactPane = $state<'list' | 'editor' | 'preview'>('editor')
     let previewValues = $state<Record<string, string>>({})
     let hydratedPreviewScope = $state('')
+    let blockEditor: PromptV2BlockEditor | undefined = $state()
+
+    async function findInSelectedBlock(query: string) {
+        compactPane = 'editor'
+        await tick()
+        blockEditor?.findInBody(query)
+    }
 
     const promptItems = $derived(DBState.db.promptTemplate ?? [])
     const toggleTree = $derived(parsePromptV2ToggleTree(DBState.db.customPromptTemplateToggle ?? ''))
@@ -240,6 +248,7 @@
                         onAdd={addBlock}
                         onRemove={removeBlock}
                         onMove={moveBlock}
+                        onFind={findInSelectedBlock}
                     />
                 {:else}
                     <PromptV2ToggleEditor view="library" bind:template={DBState.db.customPromptTemplateToggle} />
@@ -250,6 +259,7 @@
         <div data-prompt-v2-editor class="workspace-pane workspace-pane--editor">
             {#if mode === 'prompts'}
                 <PromptV2BlockEditor
+                    bind:this={blockEditor}
                     item={selectedItem}
                     definitions={toggleTree.definitions}
                     {previewValues}

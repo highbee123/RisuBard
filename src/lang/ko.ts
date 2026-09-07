@@ -1769,6 +1769,7 @@ export const languageKorean = {
     blockList: "프롬프트 목록",
     editor: "블록 편집기",
     searchBlocks: "블록 검색...",
+    jumpToMatch: "선택한 블록의 다음 검색어로 이동 (Enter)",
     addBlock: "블록 추가",
     noBlocks: "아직 프롬프트 블록이 없습니다.",
     active: "활성",

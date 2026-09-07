@@ -2,6 +2,7 @@
     import {
         ArrowDownIcon,
         ArrowUpIcon,
+        ArrowRightIcon,
         BracesIcon,
         PlusIcon,
         SearchIcon,
@@ -15,6 +16,7 @@
         parsePromptV2Text,
     } from 'src/ts/promptV2'
     import ShButton from 'src/lib/UI/GUI/ShButton.svelte'
+    import { findTextareaMatch } from 'src/ts/gui/textareaSearch'
 
     let {
         items,
@@ -24,6 +26,7 @@
         onAdd,
         onRemove,
         onMove,
+        onFind,
     }: {
         items: PromptItem[]
         selectedIndex: number
@@ -32,9 +35,12 @@
         onAdd: () => void
         onRemove: (index: number) => void
         onMove: (index: number, direction: -1 | 1) => void
+        onFind: (query: string) => void
     } = $props()
 
     let search = $state('')
+    const canFind = $derived(!!items[selectedIndex]
+        && !!findTextareaMatch(blockState(items[selectedIndex]).body, search))
 
     function blockName(item: PromptItem): string {
         if (item.name?.trim()) return item.name.trim()
@@ -92,10 +98,24 @@
         <div class="relative mt-3">
             <SearchIcon size={14} class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-textcolor2" />
             <input
-                class="h-10 w-full rounded-md border border-darkborderc bg-transparent pl-9 pr-3 text-sm outline-none placeholder:text-textcolor2 focus:border-borderc focus:ring-2 focus:ring-borderc/50"
+                class="h-10 w-full rounded-md border border-darkborderc bg-transparent pl-9 pr-12 text-sm outline-none placeholder:text-textcolor2 focus:border-borderc focus:ring-2 focus:ring-borderc/50"
                 bind:value={search}
                 placeholder={language.promptV2.searchBlocks}
+                onkeydown={(event) => {
+                    if (event.key === 'Enter' && !event.isComposing && canFind) {
+                        event.preventDefault()
+                        onFind(search)
+                    }
+                }}
             />
+            <button
+                type="button"
+                class="absolute right-1 top-1 flex h-8 w-8 items-center justify-center rounded text-textcolor2 hover:bg-selected hover:text-textcolor disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-2 focus-visible:outline-borderc"
+                disabled={!canFind}
+                title={language.promptV2.jumpToMatch}
+                aria-label={language.promptV2.jumpToMatch}
+                onclick={() => onFind(search)}
+            ><ArrowRightIcon size={16} /></button>
         </div>
     </header>
 

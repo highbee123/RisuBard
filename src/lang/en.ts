@@ -1684,6 +1684,7 @@ export const languageEnglish = {
         blockList: "Prompt list",
         editor: "Block editor",
         searchBlocks: "Search blocks...",
+        jumpToMatch: "Go to next match in the selected block (Enter)",
         addBlock: "Add block",
         noBlocks: "No prompt blocks yet.",
         active: "Active",

@@ -10,6 +10,8 @@
         Trash2Icon,
     } from '@lucide/svelte'
     import { language } from 'src/lang'
+    import { findTextareaMatch, revealTextareaMatch } from 'src/ts/gui/textareaSearch'
+    import { persistElementHeight } from 'src/ts/gui/resizableSize'
     import type { PromptItem, PromptRole, PromptType } from 'src/ts/process/prompt'
     import {
         compilePromptV2Text,
@@ -45,6 +47,19 @@
     let copyTimer: ReturnType<typeof setTimeout> | undefined
     let conditionError = $state('')
     let bodyPreviewElement: HTMLPreElement | undefined = $state()
+    let bodyField: HTMLTextAreaElement | undefined = $state()
+    let lastSearch: { item: PromptItem; query: string } | undefined
+
+    export function findInBody(search: string) {
+        if (!bodyField || !item) return
+        const query = search.trim()
+        const continuing = lastSearch?.item === item && lastSearch.query === query
+        const match = findTextareaMatch(bodyField.value, query, continuing ? bodyField.selectionEnd : 0)
+        if (!match) return
+        revealTextareaMatch(bodyField, match)
+        if (bodyPreviewElement) bodyPreviewElement.scrollTop = bodyField.scrollTop
+        lastSearch = { item, query }
+    }
 
     const textSource = $derived(item ? getPromptV2TextSource(item) : null)
     const parsedText = $derived(textSource ? parsePromptV2Text(textSource.source) : null)
@@ -369,10 +384,12 @@
                             <pre class="prompt-body-preview" bind:this={bodyPreviewElement} aria-hidden="true">{#each bodyPreviewSegments as segment}<span
                                 class:prompt-body-preview-text--active={segment.state === 'active'}
                                 class:prompt-body-preview-text--inactive={segment.state === 'inactive'}
-                            >{segment.text}</span>{/each}</pre>
+                            >{segment.text}</span>{/each}{'\n'}</pre>
                         {/if}
                         <textarea
                             class="prompt-body-field"
+                            bind:this={bodyField}
+                            use:persistElementHeight={'prompt-v2-body'}
                             class:prompt-body-field--preview={hasBodyPreview}
                             class:prompt-body-field--active={previewState === true}
                             class:prompt-body-field--inactive={previewState === false}
@@ -620,6 +637,11 @@
         font-weight: 700;
     }
 
+    .prompt-body-field,
+    .prompt-body-preview {
+        scrollbar-gutter: stable;
+    }
+
     .prompt-body-field {
         position: relative;
         z-index: 1;
@@ -659,7 +681,10 @@
         white-space: pre-wrap;
     }
 
-    .prompt-body-preview span { transition: color 160ms ease, opacity 160ms ease; }
+    .prompt-body-preview span {
+        font: inherit;
+        transition: color 160ms ease, opacity 160ms ease;
+    }
     .prompt-body-preview-text--active { color: var(--color-info); }
     .prompt-body-preview-text--inactive {
         color: color-mix(in srgb, var(--color-textcolor2) 42%, var(--color-bgcolor));
