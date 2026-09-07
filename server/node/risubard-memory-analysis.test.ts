@@ -686,6 +686,66 @@ describe('memory analysis runner', () => {
         expect(recordRebootBatchReceipt).not.toHaveBeenCalled()
     })
 
+    test('leaves a reboot batch recoverable when a canonical document cannot be saved', async () => {
+        const recordRebootBatchReceipt = vi.fn(async (input) => input.receipt)
+        const runner = createMemoryAnalysisRunner({
+            memoryService: { loadState: vi.fn(), applyDelta: vi.fn() },
+            nativeV2Analysis: true,
+            markdownWikiService: {
+                inquire: vi.fn(async () => ({ graphRevision: 0, sources: [] })),
+                beginRebootBatch: vi.fn(async () => ({ canonicalCount: 0 })),
+                saveConfirmedTurn: vi.fn(async (input) => ({
+                    ...input,
+                    id: 'event.arrival',
+                    type: 'event' as const,
+                    title: '도착',
+                    relativePath: 'events/arrival.md',
+                    contentHash: 'event-hash',
+                })),
+                saveCanonicalDocument: vi.fn(async () => {
+                    throw new Error('Canonical document save failed')
+                }),
+                recordRebootBatchReceipt,
+            },
+            onError: vi.fn(),
+            analyze: async (request) => request.format === 'canonical-batch'
+                ? canonicalBatch('## 앨리스\n\n### 현재 상태\n\n- 도착했다.')
+                : JSON.stringify({
+                    schemaVersion: 1,
+                    turns: [{ title: '도착', establishedEvents: ['앨리스가 도착했다.'] }],
+                    stateChanges: [],
+                    characterKnowledge: [],
+                    persistentFacts: [],
+                    openContinuity: [],
+                    canonicalUpdateCandidates: [{
+                        type: 'character',
+                        title: '앨리스',
+                        aliases: [],
+                        reason: '처음 등장했다.',
+                        action: 'create',
+                        targetDocumentId: null,
+                        confidence: 1,
+                    }],
+                }),
+        })
+
+        await expect(runner.run({
+            characterId: 'character',
+            chatId: 'reboot-job',
+            modelSessionChatId: 'chat',
+            messages: [{
+                messageId: 'assistant-1',
+                role: 'assistant',
+                content: '앨리스가 도착했다.',
+            }],
+            rebootTurns: [{
+                assistantMessageId: 'assistant-1',
+                sourceMessageIds: ['assistant-1'],
+            }],
+        })).rejects.toThrow('Canonical document save failed')
+        expect(recordRebootBatchReceipt).not.toHaveBeenCalled()
+    })
+
     test('retries a schema-invalid memory draft with validation feedback', async () => {
         const saveConfirmedTurn = vi.fn(async () => undefined)
         const analyze = vi.fn(async (request: MemoryAnalysisModelRequest) => {
