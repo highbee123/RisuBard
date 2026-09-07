@@ -44,6 +44,7 @@ import {
     normalizeRisuBardCanonicalWritingStyle,
     normalizeRisuBardHistoricalSourceMatchLimit,
     normalizeRisuBardInquiryTokenBudget,
+    normalizeRisuBardInquiryTimeoutMs,
 } from '../risubard/risuBardSettings';
 import { normalizeWikiRebootJob } from '../risubard/wikiReboot';
 import { normalizeWikiWritingLanguage } from '../risubard/wikiWritingLanguage';
@@ -939,6 +940,9 @@ export function setDatabase(data:Database){
     data.risuBardInquiryEventTokenBudget = chatInquiryTokenBudget.events
     data.risuBardInquirySourceTokenBudget = chatInquiryTokenBudget.perSource
     data.risuBardInquiryMaximumTokenBudget = chatInquiryTokenBudget.maximum
+    data.risuBardInquiryTimeoutMs = normalizeRisuBardInquiryTimeoutMs(
+        data.risuBardInquiryTimeoutMs
+    )
     data.risuBardHistoricalSourceMatchLimit =
         normalizeRisuBardHistoricalSourceMatchLimit(
             data.risuBardHistoricalSourceMatchLimit
@@ -1722,6 +1726,7 @@ export interface Database{
     risuBardInquiryEventTokenBudget?: number
     risuBardInquirySourceTokenBudget?: number
     risuBardInquiryMaximumTokenBudget?: number
+    risuBardInquiryTimeoutMs?: number
     risuBardHistoricalSourceMatchLimit?: number
     risuBardCanonicalWritingStyle?: import('../risubard/risuBardSettings').RisuBardCanonicalWritingStyle
     risuBardCanonicalCustomStyle?: string

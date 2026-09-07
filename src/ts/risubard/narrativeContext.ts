@@ -5,7 +5,10 @@ import type {
     ContextSource,
 } from '../../../packages/risubard-core/src/contextCompiler'
 import { invokeBrowserFetch } from './browserFetch'
-import { normalizeRisuBardInquiryTokenBudget } from './risuBardSettings'
+import {
+    normalizeRisuBardInquiryTokenBudget,
+    RISUBARD_INQUIRY_TIMEOUT_MS_DEFAULT,
+} from './risuBardSettings'
 import type { HistoricalSourceMatch } from './historicalSourceRecall'
 
 export const NARRATIVE_CONTEXT_OPT_IN_KEY =
@@ -88,6 +91,7 @@ export async function loadNarrativeInquiry(input: {
     characterId: string
     chatId: string
     currentInput: string
+    fallbackInput?: string
     tokenBudget?: {
         target: number
         events?: number
@@ -111,7 +115,7 @@ export async function loadNarrativeInquiry(input: {
     createAuth(): Promise<string>
     timeoutMs?: number
 }): Promise<NarrativeInquiryResponse> {
-    const timeoutMs = input.timeoutMs ?? 5_000
+    const timeoutMs = input.timeoutMs ?? RISUBARD_INQUIRY_TIMEOUT_MS_DEFAULT
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1
         || timeoutMs > 10_000) {
         throw new Error('Invalid RisuBard narrative inquiry timeout')
@@ -139,6 +143,10 @@ export async function loadNarrativeInquiry(input: {
                             characterId: input.characterId,
                             chatId: input.chatId,
                             currentInput: input.currentInput.slice(0, 4_096),
+                            ...(input.fallbackInput === undefined
+                                ? {}
+                                : { fallbackInput:
+                                    input.fallbackInput.slice(-4_096) }),
                             ...(input.tokenBudget === undefined
                                 ? {}
                                 : { tokenBudget:

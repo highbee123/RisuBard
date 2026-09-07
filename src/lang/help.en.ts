@@ -448,6 +448,8 @@ export const helpEn = {
             "Actual tokenizer limit for each selected wiki document or historical chat excerpt. This replaces the old character-count approximation.",
         risuBardInquiryMaximumTokenBudget:
             "Absolute token limit for one wiki inquiry, including detailed retrieval and required documents. A lower maximum also clamps the target.",
+        risuBardInquiryTimeoutMs:
+            "Time limit for each wiki inquiry round. The default and maximum are 10,000 ms; the minimum is 1 ms.",
         risuBardHistoricalSourceMatchLimit:
             "Maximum historical chat excerpts admitted from lexical candidates and exact source IDs of selected events. Relevance and token budgets may select fewer. The default is 8, the safety ceiling is 32, and 0 disables historical chat recall.",
         risuBardAdditionalSearchLimit:

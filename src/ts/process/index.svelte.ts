@@ -34,6 +34,7 @@ import { forageStorage, readImage } from "../globalApi.svelte";
 import { chatGenKey, chatProcessStage, endGeneration, isChatGenerating, setGenerationStage, startGeneration } from "./generationState";
 import { clearPendingSend, registerPendingSend } from "./request/pendingSends";
 import {
+    buildBoundedNarrativeInquiryFallback,
     createStoredResponseMemoryAnalysis,
     projectConfirmedMemoryTurn,
     projectMemoryAnalysisEvidence,
@@ -134,7 +135,8 @@ function resolvedArcPlotterSettings() {
 function findRisuBardChat(chatId?: string): Chat | undefined {
     if (!chatId) return undefined
     return DBState.db.characters.flatMap((character) => character.chats)
-        .find((chat) => chat.id === chatId)
+        .find((chat) => chat.id === chatId
+            || chat.risuBardWikiReboot?.stagingChatId === chatId)
 }
 
 async function resolveNarrativeFirstMessageEvidence(
@@ -185,6 +187,9 @@ const storedResponseMemoryAnalysis = createStoredResponseMemoryAnalysis({
     createAuth: () => forageStorage.createAuth(),
     getModelMode: (chatId) =>
         resolvedRisuBardSettings(findRisuBardChat(chatId)).risuBardModelMode,
+    getInquiryTimeoutMs: (chatId) =>
+        resolvedRisuBardSettings(findRisuBardChat(chatId))
+            .risuBardInquiryTimeoutMs,
     onError(error) {
         const reason = boundedMemoryAnalysisError(error) || '알 수 없는 오류'
         console.warn(`[RisuBard memory analysis] ${reason}`)
@@ -1523,6 +1528,14 @@ export async function sendChat(chatProcessIndex = -1,arg:{
                         characterId: currentChar.chaId,
                         chatId: narrativeSessionChatId,
                         currentInput,
+                        fallbackInput: buildBoundedNarrativeInquiryFallback(
+                            projectRecentMemoryMessages(
+                                currentChat.message,
+                                normalizeNarrativeWorkingMessageLimit(
+                                    inquirySettings.risuBardResponseMessageCount
+                                )
+                            )
+                        ),
                         entityHints: lorepmt.bardWikiEntityHints,
                         tokenBudget: {
                             target: inquirySettings.risuBardInquiryTargetTokenBudget,
@@ -1553,6 +1566,7 @@ export async function sendChat(chatProcessIndex = -1,arg:{
                             }),
                         fetchImpl: fetch,
                         createAuth: () => forageStorage.createAuth(),
+                        timeoutMs: inquirySettings.risuBardInquiryTimeoutMs,
                     })
                     sources = inquiry.sources
                     narrativeContextObservation.promptMode = inquiry.mode

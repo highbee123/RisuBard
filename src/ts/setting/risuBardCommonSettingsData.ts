@@ -85,6 +85,15 @@ export const risuBardCommonSettingsItems: SettingItem[] = [
         keywords: ['inquiry', 'event', 'token', '검색', '사건', '토큰'],
     },
     {
+        id: 'risubard.chat.inquiryTimeoutMs',
+        type: 'number',
+        labelKey: 'risuBardInquiryTimeoutMs',
+        helpKey: 'risuBardInquiryTimeoutMs',
+        bindKey: 'risuBardInquiryTimeoutMs',
+        options: { min: 1, max: 10_000, step: 500 },
+        keywords: ['inquiry', 'timeout', 'wiki', '조회', '시간', '제한'],
+    },
+    {
         id: 'risubard.chat.inquiryMaximumTokenBudget',
         type: 'number',
         labelKey: 'risuBardInquiryMaximumTokenBudget',

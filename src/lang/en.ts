@@ -3222,6 +3222,7 @@ export const languageEnglish = {
     risuBardInquiryEventTokenBudget: "Event evidence token budget",
     risuBardInquirySourceTokenBudget: "Per-source inquiry token limit",
     risuBardInquiryMaximumTokenBudget: "Wiki inquiry absolute token limit",
+    risuBardInquiryTimeoutMs: "Wiki inquiry timeout (ms)",
     risuBardHistoricalSourceMatchLimit: "Maximum historical excerpts",
     risuBardAdditionalSearchLimit: "Additional search limit when candidates are insufficient",
     risuBardCanonicalTargetLimit: "Automatic canonical targets per analysis",
