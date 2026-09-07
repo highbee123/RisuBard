@@ -4,6 +4,7 @@
         ArrowUpIcon,
         ArrowRightIcon,
         BracesIcon,
+        CopyIcon,
         PlusIcon,
         SearchIcon,
         Trash2Icon,
@@ -24,6 +25,7 @@
         previewValues,
         onSelect,
         onAdd,
+        onDuplicate,
         onRemove,
         onMove,
         onFind,
@@ -33,6 +35,7 @@
         previewValues: Record<string, string>
         onSelect: (index: number) => void
         onAdd: () => void
+        onDuplicate: () => void
         onRemove: (index: number) => void
         onMove: (index: number, direction: -1 | 1) => void
         onFind: (query: string) => void
@@ -86,12 +89,22 @@
 
 <section class="flex h-full min-h-0 flex-col" aria-label={language.promptV2.blockList}>
     <header class="prompt-v2-pane-header border-b border-darkborderc px-3 py-3">
-        <div class="flex items-center justify-between gap-2">
+        <div class="flex items-center gap-2">
             <div class="flex items-center gap-2 font-medium">
                 <BracesIcon size={16} class="text-borderc" />
                 <span>{language.promptV2.blockList}</span>
             </div>
-            <span class="rounded-full bg-darkbutton px-2 py-0.5 text-[11px] text-textcolor2">
+            <div class="ml-auto flex shrink-0 items-center gap-1">
+                <ShButton size="xs" variant="secondary" onclick={onAdd}>
+                    <PlusIcon size={14} />
+                    {language.promptV2.newBlock}
+                </ShButton>
+                <ShButton size="xs" variant="secondary" onclick={onDuplicate} disabled={selectedIndex < 0 || selectedIndex >= items.length}>
+                    <CopyIcon size={14} />
+                    {language.promptV2.duplicateBlock}
+                </ShButton>
+            </div>
+            <span class="hidden rounded-full bg-darkbutton px-2 py-0.5 text-[11px] text-textcolor2 2xl:inline">
                 {language.promptV2.blockCount(items.length)}
             </span>
         </div>
@@ -183,12 +196,6 @@
         {/if}
     </div>
 
-    <footer class="border-t border-darkborderc p-2">
-        <ShButton className="w-full" variant="soft-primary" onclick={onAdd}>
-            <PlusIcon size={16} />
-            {language.promptV2.addBlock}
-        </ShButton>
-    </footer>
 </section>
 
 <style>

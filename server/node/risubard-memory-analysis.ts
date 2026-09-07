@@ -1585,8 +1585,9 @@ export function createMemoryAnalysisRunner(
                                 })
                             }
                             catch (error) {
-                                receiptWarnings.push(`정본 문서 저장 실패: ${entry.candidate.title}`)
                                 await reportError(error)
+                                if (rebootRecoveryStarted) throw error
+                                receiptWarnings.push(`정본 문서 저장 실패: ${entry.candidate.title}`)
                             }
                         }
                         }

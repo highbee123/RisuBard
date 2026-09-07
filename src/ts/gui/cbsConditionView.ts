@@ -201,6 +201,16 @@ export function summarizeCbsCondition(
     const condition = inner.match(/^#(?:if|if_pure|when) (.+)$/s)
     let tree = condition ? expression(condition[1]) : raw(inner)
     const when = splitArguments(inner)
+    const toggleArgs = when.slice(1)
+    if (toggleArgs[0] === 'keep') toggleArgs.shift()
+    if (when[0] === '#when' && toggleArgs.length === 3
+        && ['tis', 'tisnot'].includes(toggleArgs[1]) && /^[\w.-]+$/.test(toggleArgs[0])
+        && !toggleArgs[2].includes('{{')) {
+        const left = expression(`{{getglobalvar::toggle_${toggleArgs[0]}}}`)
+        const right = expression(toggleArgs[2])
+        const operator = toggleArgs[1] === 'tis' ? '=' : '≠'
+        tree = { kind: 'comparison', left, right, operator, text: `${left.text} ${operator} ${right.text}` }
+    }
     if (
         when[0] === '#when' && when[1] === 'keep' && when.length >= 3 && when.length % 2 === 1
         && when.filter((_, index) => index > 2 && index % 2 === 1).every(join => join === 'and' || join === 'or')

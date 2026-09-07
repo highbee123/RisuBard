@@ -224,6 +224,19 @@
         padding-bottom: 0;
     }
 
+    .settings-page:has(> :global(.settings-standard-page--full-width)) {
+        width: 100%;
+        max-width: 100%;
+        height: 100%;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        padding: 1rem clamp(1rem, 2vw, 2rem) 1.5rem;
+        overflow: hidden;
+    }
+
+    .settings-content:has(:global(.settings-standard-page--full-width)) { overflow: hidden; }
+
     :global(.settings-standard-page) {
         min-width: 0;
         display: flex;
@@ -339,6 +352,9 @@
         .settings-page {
             padding: 1.15rem 1rem max(5rem, env(safe-area-inset-bottom));
         }
+
+        .settings-content:has(:global(.settings-standard-page--full-width)) { display: flex; flex-direction: column; }
+        .settings-content:has(:global(.settings-standard-page--full-width)) .settings-page { height: auto; flex: 1; }
 
         .settings-content--mobile-collection:has(:global(.settings-standard-page--resizable)) {
             display: flex;

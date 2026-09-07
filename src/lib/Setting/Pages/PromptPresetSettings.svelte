@@ -27,17 +27,16 @@
 
 <SettingPage
     title={language.settingsWorkspace.aiWorkspace.sections['chat-prompt-presets'].title}
-    description={language.settingsWorkspace.aiWorkspace.sections['chat-prompt-presets'].description}
-    resizable={$PromptPresetSubmenuIndex === 2}
-    wide={$PromptPresetSubmenuIndex === 2}
-    unboundedHeight={$PromptPresetSubmenuIndex === 2}
-    resizeStorageKey="prompt-v2-frame"
+    fullWidth={$PromptPresetSubmenuIndex === 2}
 >
-    <PresetHeader
-        label={language.currentPromptPreset}
-        activeName={DBState.db.botPresets?.[DBState.db.botPresetsId]?.name ?? '—'}
-        onManage={openPresetSelector}
-    />
+    {#snippet headerActions()}
+        <PresetHeader
+            compact
+            label={language.currentPromptPreset}
+            activeName={DBState.db.botPresets?.[DBState.db.botPresetsId]?.name ?? '—'}
+            onManage={openPresetSelector}
+        />
+    {/snippet}
     <SettingTabs
         tabs={[
             { label: language.basicInfo, value: 0 },

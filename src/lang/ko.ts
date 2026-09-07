@@ -2,6 +2,8 @@ import { helpKo } from "./help.ko";
 
 export const languageKorean = {
   cbsEditor: {
+        logic: { OR: '또는', AND: '그리고', NOT: '아님' },
+    on: '켜짐', off: '꺼짐',
     variables: '변수',
     showVariables: '변수 사이드바 펼치기',
     hideVariables: '변수 사이드바 접기',
@@ -1772,6 +1774,8 @@ export const languageKorean = {
     searchBlocks: "블록 검색...",
     jumpToMatch: "선택한 블록의 다음 검색어로 이동 (Enter)",
     addBlock: "블록 추가",
+    newBlock: "새 블록",
+    duplicateBlock: "블록 복제",
     noBlocks: "아직 프롬프트 블록이 없습니다.",
     active: "활성",
     inactive: "비활성",
@@ -1805,13 +1809,13 @@ export const languageKorean = {
     sourceMode: "원문",
     visualMode: "비주얼",
     syntaxPalette: "조건 구문",
+    conditionDesigner: "조건문 디자이너",
     syntaxPaletteHint: "본문에서 커서를 두거나 텍스트를 선택한 뒤 조건 블록을 삽입하세요.",
     conditionJoin: "조건 연결 방식",
     conditionOperator: "비교 연산자",
     insertAtCursor: "커서에 조건 삽입",
     wrapSelection: "선택 영역을 조건으로 감싸기",
     innerFormat: "내부 형식",
-    blockSettings: "블록 설정",
     unsupportedActivation: "채팅 및 캐시 블록은 구조 블록이므로 조건으로 숨길 수 없습니다.",
     manualConditionTitle: "직접 작성한 조건이 있습니다",
     manualConditionDescription: "시각 편집기가 안전하게 재작성할 수 없는 조건식입니다. 원문은 그대로 보존되며 기존 프롬프트 탭에서 편집할 수 있습니다.",

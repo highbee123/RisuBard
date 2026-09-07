@@ -2,6 +2,8 @@ import { helpEn } from "./help.en";
 
 export const languageEnglish = {
     cbsEditor: {
+        logic: { OR: 'OR', AND: 'AND', NOT: 'NOT' },
+        on: 'On', off: 'Off',
         variables: 'Variables',
         showVariables: 'Show variable sidebar',
         hideVariables: 'Hide variable sidebar',
@@ -1687,6 +1689,8 @@ export const languageEnglish = {
         searchBlocks: "Search blocks...",
         jumpToMatch: "Go to next match in the selected block (Enter)",
         addBlock: "Add block",
+        newBlock: "New block",
+        duplicateBlock: "Duplicate block",
         noBlocks: "No prompt blocks yet.",
         active: "Active",
         inactive: "Inactive",
@@ -1720,13 +1724,13 @@ export const languageEnglish = {
         sourceMode: "Source",
         visualMode: "Visual",
         syntaxPalette: "Condition syntax",
+        conditionDesigner: "Condition designer",
         syntaxPaletteHint: "Place the caret or select text in the body, then insert a condition block.",
         conditionJoin: "Condition join",
         conditionOperator: "Comparison operator",
         insertAtCursor: "Insert condition at caret",
         wrapSelection: "Wrap selection in condition",
         innerFormat: "Inner format",
-        blockSettings: "Block settings",
         unsupportedActivation: "Chat and cache blocks are structural and cannot be conditionally hidden.",
         manualConditionTitle: "Hand-written condition detected",
         manualConditionDescription: "This block uses condition syntax the visual editor cannot safely rewrite. Its source is preserved exactly; use the legacy Prompt tab to edit it.",

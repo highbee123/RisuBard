@@ -13,6 +13,43 @@ afterEach(async () => {
 })
 
 describe('CBS visual condition editor', () => {
+    it('encloses nested branches and reveals a collapsed body when focusing a source range', async () => {
+        const source = 'Before{{#when::1}}Outer{{#if 1}}Inner{{/if}}{{:else}}Otherwise{{/when}}After'
+        const onInput = vi.fn()
+        mounted = mount(CbsConditionView, { target: document.body, props: { value: source, onInput, showVariableSidebar: false } })
+        await tick()
+        const blocks = document.querySelectorAll<HTMLDetailsElement>('[data-cbs-block]')
+        expect(blocks).toHaveLength(2)
+        expect(blocks[0].contains(blocks[1])).toBe(true)
+        const fields = [...document.querySelectorAll<HTMLTextAreaElement>('[data-cbs-body]')]
+        expect(fields.find(field => field.value === 'After')?.closest('[data-cbs-block]')).toBeNull()
+        expect(fields.find(field => field.value === 'Otherwise')?.closest('[data-cbs-block]')).toBe(blocks[0])
+        blocks[0].open = false
+        blocks[1].open = false
+        mounted.focusSelection(source.indexOf('Inner'), source.indexOf('Inner') + 5)
+        expect(blocks[0].open && blocks[1].open).toBe(true)
+        const inner = fields.find(field => field.value === 'Inner')!
+        expect(document.activeElement).toBe(inner)
+        expect(inner.selectionEnd - inner.selectionStart).toBe(5)
+        inner.value = 'Changed'
+        inner.dispatchEvent(new Event('input', { bubbles: true }))
+        await tick()
+        expect(onInput).toHaveBeenLastCalledWith(source.replace('Inner', 'Changed'))
+        expect(document.activeElement).toBe(inner)
+    })
+
+    it('labels boolean values only for declared switch variables', async () => {
+        mounted = mount(CbsConditionView, { target: document.body, props: {
+            value: '{{#if {{equal::{{getglobalvar::switch}}::0}}}}A{{/if}}{{#if {{equal::{{getglobalvar::count}}::0}}}}B{{/if}}',
+            switchVariables: ['switch'], onInput: vi.fn(), showVariableSidebar: false,
+        } })
+        await tick()
+        const summaries = document.querySelectorAll('[data-cbs-summary]')
+        expect(summaries[0].textContent).toContain('Off')
+        expect(summaries[1].textContent).toContain('"0"')
+        expect(summaries[1].textContent).not.toContain('Off')
+    })
+
     it('shows Prompt V2 toggle labels and edits only the selected body span', async () => {
         const opening = '{{#if_pure {{? {{? {{getglobalvar::toggle_a}}>0}} || {{? {{getglobalvar::toggle_b}}>0}}=1}}}}'
         const source = `Before\n${opening}\nConditional body\n{{/if}}\nAfter`

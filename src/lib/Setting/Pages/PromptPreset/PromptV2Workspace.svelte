@@ -135,6 +135,16 @@
         compactPane = 'editor'
     }
 
+    function duplicateBlock() {
+        if (selectedIndex < 0 || selectedIndex >= promptItems.length) return
+        const insertAt = selectedIndex + 1
+        const next = [...promptItems]
+        next.splice(insertAt, 0, { ...promptItems[selectedIndex] } as PromptItem)
+        replaceTemplate(next)
+        selectedIndex = insertAt
+        compactPane = 'editor'
+    }
+
     function removeBlock(index: number) {
         const next = [...promptItems]
         next.splice(index, 1)
@@ -193,9 +203,7 @@
             </button>
         </div>
 
-        <p class="hidden min-w-0 grow truncate px-2 text-xs text-textcolor2 xl:block">{language.promptV2.workspaceHelp}</p>
-
-        <div class="hidden items-center gap-1 lg:flex">
+        <div class="ml-auto hidden items-center gap-1 lg:flex">
             <ShButton
                 size="sm"
                 variant={showList ? 'soft-primary' : 'ghost'}
@@ -246,6 +254,7 @@
                         {previewValues}
                         onSelect={selectBlock}
                         onAdd={addBlock}
+                        onDuplicate={duplicateBlock}
                         onRemove={removeBlock}
                         onMove={moveBlock}
                         onFind={findInSelectedBlock}
@@ -288,7 +297,10 @@
     .prompt-v2-workspace {
         container: prompt-v2 / inline-size;
         display: flex;
-        min-height: 34rem;
+        width: 100%;
+        height: 100%;
+        min-height: 0;
+        max-height: 100%;
         flex: 1;
         flex-direction: column;
         overflow: hidden;
@@ -366,6 +378,10 @@
         flex-shrink: 0;
         overflow: hidden;
     }
+    :global(.prompt-v2-pane-header.prompt-v2-editor-header) {
+        height: auto;
+        min-height: 3.5rem;
+    }
 
     .compact-pane-tabs {
         display: none;
@@ -376,7 +392,6 @@
     }
 
     @container prompt-v2 (max-width: 68.75rem) {
-        .prompt-v2-workspace { min-height: 38rem; }
         .compact-pane-tabs { display: grid; }
         .workspace-grid,
         .workspace-grid--no-list,

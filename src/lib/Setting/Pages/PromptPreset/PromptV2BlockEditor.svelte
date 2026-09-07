@@ -5,6 +5,7 @@
         BracesIcon,
         CheckIcon,
         ClipboardIcon,
+        PencilIcon,
         PlusIcon,
         Settings2Icon,
         SlidersHorizontalIcon,
@@ -34,6 +35,7 @@
     import CbsConditionView from 'src/lib/UI/GUI/CbsConditionView.svelte'
     import ShAlert from 'src/lib/UI/GUI/ShAlert.svelte'
     import ShButton from 'src/lib/UI/GUI/ShButton.svelte'
+    import ShDialog from 'src/lib/UI/GUI/ShDialog.svelte'
     import ShSwitch from 'src/lib/UI/GUI/ShSwitch.svelte'
 
     let {
@@ -56,8 +58,13 @@
     let conditionError = $state('')
     let bodyPreviewElement: HTMLPreElement | undefined = $state()
     let bodyField: HTMLTextAreaElement | undefined = $state()
+    let nameField: HTMLInputElement | undefined = $state()
     let visualBodyField: { focusSelection: (start: number, end: number) => void } | undefined = $state()
     let editorMode = $state<PromptV2EditorMode>(loadPromptV2EditorMode())
+    let activationDialogOpen = $state(false)
+    let syntaxDialogOpen = $state(false)
+    let editingName = $state(false)
+    let draftName = $state('')
     let bodySelection = $state({ start: 0, end: 0 })
     let bodySyntaxJoin = $state<PromptV2Join>('and')
     let bodySyntaxConditions = $state<PromptV2Condition[]>([])
@@ -109,6 +116,21 @@
     function patchItem(patch: Record<string, unknown>) {
         if (!item) return
         onReplace({ ...item, ...patch } as PromptItem)
+    }
+
+    async function beginNameEdit() {
+        if (!item) return
+        draftName = item.name ?? ''
+        editingName = true
+        await tick()
+        nameField?.focus()
+        nameField?.select()
+    }
+
+    function finishNameEdit(commit = true) {
+        if (!editingName) return
+        editingName = false
+        if (commit) patchItem({ name: draftName })
     }
 
     function defaultValue(definition?: PromptV2ToggleDefinition): string {
@@ -177,6 +199,7 @@
         const conditions = parsedText.activation.conditions.filter((_, conditionIndex) => conditionIndex !== index)
         if (conditions.length === 0) {
             applyText(parsedText.body, null)
+            activationDialogOpen = false
         } else {
             updateActivation({ conditions })
         }
@@ -236,8 +259,14 @@
         )
         bodySelection = { start: result.selectionStart, end: result.selectionEnd }
         applyText(result.body)
+        syntaxDialogOpen = false
         await tick()
-        visualBodyField?.focusSelection(result.selectionStart, result.selectionEnd)
+        if (editorMode === 'source' && bodyField) {
+            bodyField.focus()
+            bodyField.setSelectionRange(result.selectionStart, result.selectionEnd)
+        } else {
+            visualBodyField?.focusSelection(result.selectionStart, result.selectionEnd)
+        }
     }
 
     function replaceType(type: PromptType) {
@@ -290,35 +319,127 @@
 
 {#if item}
     <section class="flex h-full min-h-0 flex-col" aria-label={language.promptV2.editor}>
-        <header class="prompt-v2-pane-header flex items-center justify-between gap-3 border-b border-darkborderc px-4 py-3">
-            <div class="min-w-0">
-                <div class="flex items-center gap-2 font-medium">
-                    <Settings2Icon size={16} class="text-borderc" />
-                    <span>{item.name?.trim() || language.promptV2.editor}</span>
-                </div>
-                <p class="mt-1 text-xs text-textcolor2">{item.type}</p>
+        <header class="prompt-v2-pane-header prompt-v2-editor-header">
+            <div class="editor-title-control">
+                <Settings2Icon size={16} class="shrink-0 text-borderc" />
+                {#if editingName}
+                    <input
+                        data-prompt-v2-name-input
+                        bind:this={nameField}
+                        class="editor-title-input"
+                        bind:value={draftName}
+                        aria-label={language.name}
+                        onblur={() => finishNameEdit()}
+                        onkeydown={(event) => {
+                            if (event.key === 'Enter' && !event.isComposing) event.currentTarget.blur()
+                            if (event.key === 'Escape') finishNameEdit(false)
+                        }}
+                    />
+                {:else}
+                    <button data-prompt-v2-name type="button" class="editor-title-button" onclick={beginNameEdit} title={language.name}>
+                        <span class="truncate">{item.name?.trim() || language.promptV2.editor}</span>
+                        <PencilIcon size={13} />
+                    </button>
+                {/if}
             </div>
-            <span class="rounded-full border border-darkborderc bg-darkbutton px-2 py-1 text-[11px] text-textcolor2">
-                {parsedText?.activation ? parsedText.activation.join.toUpperCase() : language.promptV2.always}
-            </span>
+
+            <div data-prompt-v2-header-fields class="editor-header-fields">
+                <label>
+                    <span>{language.type}</span>
+                    <select value={item.type} onchange={(event) => replaceType(event.currentTarget.value as PromptType)}>
+                        <option value="plain">{language.formating.plain}</option>
+                        <option value="jailbreak">{language.formating.jailbreak}</option>
+                        <option value="chat">{language.Chat}</option>
+                        <option value="persona">{language.formating.personaPrompt}</option>
+                        <option value="description">{language.formating.description}</option>
+                        <option value="authornote">{language.formating.authorNote}</option>
+                        <option value="lorebook">{language.formating.lorebook}</option>
+                        <option value="memory">{language.formating.memory}</option>
+                        <option value="postEverything">{language.formating.postEverything}</option>
+                        <option value="chatML">ChatML</option>
+                        <option value="cache">{language.cachePoint}</option>
+                        <option value="cot">{language.cot}</option>
+                    </select>
+                </label>
+
+                {#if item.type === 'plain' || item.type === 'jailbreak' || item.type === 'cot'}
+                    <label>
+                        <span>{language.specialType}</span>
+                        <select value={item.type2} onchange={(event) => patchItem({ type2: event.currentTarget.value })}>
+                            <option value="normal">{language.noSpecialType}</option>
+                            <option value="main">{language.mainPrompt}</option>
+                            <option value="globalNote">{language.globalNote}</option>
+                        </select>
+                    </label>
+                    <label>
+                        <span>{language.role}</span>
+                        <select value={item.role} onchange={(event) => patchItem({ role: event.currentTarget.value })}>
+                            <option value="user">{language.user}</option>
+                            <option value="bot">{language.character}</option>
+                            <option value="system">{language.systemPrompt}</option>
+                        </select>
+                    </label>
+                {:else if hasRole2(item)}
+                    <label>
+                        <span>{language.role}</span>
+                        <select value={item.role2 ?? 'system'} onchange={(event) => patchItem({ role2: event.currentTarget.value })}>
+                            <option value="user">{language.user}</option>
+                            <option value="bot">{language.character}</option>
+                            <option value="system">{language.systemPrompt}</option>
+                        </select>
+                    </label>
+                {:else if item.type === 'cache'}
+                    <label>
+                        <span>{language.role}</span>
+                        <select value={item.role} onchange={(event) => patchItem({ role: event.currentTarget.value })}>
+                            <option value="all">{language.all}</option>
+                            <option value="user">{language.user}</option>
+                            <option value="assistant">{language.character}</option>
+                            <option value="system">{language.systemPrompt}</option>
+                        </select>
+                    </label>
+                {/if}
+            </div>
         </header>
+
+        {#if textSource && parsedText}
+        <div class="editor-toolbar">
+            {#if textSource && parsedText?.editable}
+                <div class="toolbar-control">
+                    <ShButton size="sm" variant="secondary" onclick={() => activationDialogOpen = true}>
+                        <SlidersHorizontalIcon size={15} />
+                        {language.promptV2.activation}
+                    </ShButton>
+                    <ShSwitch
+                        checked={!!parsedText.activation}
+                        disabled={!parsedText.activation && definitions.length === 0}
+                        ariaLabel={language.promptV2.activation}
+                        onCheckedChange={(checked) => checked ? enableConditions() : applyText(parsedText.body, null)}
+                    />
+                </div>
+                <ShButton size="sm" variant="secondary" onclick={() => syntaxDialogOpen = true}>
+                    <BracesIcon size={15} />
+                    {language.promptV2.conditionDesigner}
+                </ShButton>
+            {/if}
+            <div class="editor-mode-tabs" aria-label={language.promptV2.editorMode}>
+                <button type="button" aria-pressed={editorMode === 'source'} onclick={() => setEditorMode('source')}>
+                    {language.promptV2.sourceMode}
+                </button>
+                <button type="button" aria-pressed={editorMode === 'visual'} onclick={() => setEditorMode('visual')}>
+                    {language.promptV2.visualMode}
+                </button>
+            </div>
+        </div>
+        {/if}
 
         <div class="min-h-0 grow overflow-y-auto p-4">
             {#if textSource && parsedText?.editable}
-                <section class="editor-card">
-                    <div class="flex flex-wrap items-center justify-between gap-3">
-                        <div>
-                            <h3 class="text-sm font-semibold">{language.promptV2.activation}</h3>
-                            <p class="mt-1 text-xs text-textcolor2">
-                                {parsedText.activation ? language.promptV2.activationConditional : language.promptV2.activationAlways}
-                            </p>
-                        </div>
-                        <ShSwitch
-                            checked={!!parsedText.activation}
-                            disabled={!parsedText.activation && definitions.length === 0}
-                            onCheckedChange={(checked) => checked ? enableConditions() : applyText(parsedText.body, null)}
-                        />
-                    </div>
+                <ShDialog bind:open={activationDialogOpen} size="lg" closeOnEscape contentClass="prompt-v2-tool-dialog">
+                    {#snippet title()}{language.promptV2.activation}{/snippet}
+                    <p class="text-sm text-textcolor2">
+                        {parsedText.activation ? language.promptV2.activationConditional : language.promptV2.activationAlways}
+                    </p>
 
                     {#if parsedText.activation}
                         <div class="mt-4 flex flex-wrap items-center gap-2 border-t border-darkborderc pt-4">
@@ -424,7 +545,7 @@
                     {#if conditionError}
                         <p class="mt-3 text-xs text-danger">{conditionError}</p>
                     {/if}
-                </section>
+                </ShDialog>
             {:else if parsedText && !parsedText.editable}
                 <ShAlert variant="warning" className="mb-4">
                     {#snippet icon()}<AlertTriangleIcon />{/snippet}
@@ -439,35 +560,19 @@
             {/if}
 
             {#if textSource && parsedText}
-                <section class="editor-card mt-4">
+                <section class="editor-card prompt-body-card">
                     <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
                         <h3 class="text-sm font-semibold">
                             {textSource.field === 'innerFormat' ? language.promptV2.innerFormat : language.promptV2.promptBody}
                         </h3>
                         <div class="flex items-center gap-2">
-                            <div class="editor-mode-tabs" aria-label={language.promptV2.editorMode}>
-                                <button type="button" aria-pressed={editorMode === 'source'} onclick={() => setEditorMode('source')}>
-                                    {language.promptV2.sourceMode}
-                                </button>
-                                <button type="button" aria-pressed={editorMode === 'visual'} onclick={() => setEditorMode('visual')}>
-                                    {language.promptV2.visualMode}
-                                </button>
-                            </div>
-                            {#if previewState !== null}
-                                <span
-                                    class="preview-state-pill"
-                                    class:preview-state-pill--active={previewState}
-                                    class:preview-state-pill--inactive={!previewState}
-                                >
-                                    {previewState ? language.promptV2.active : language.promptV2.inactive}
-                                </span>
-                            {/if}
                             {#if parsedText.format === 'legacy'}
                                 <span class="rounded-full border border-warning-border bg-warning-bg px-2 py-0.5 text-[11px] text-warning">Legacy</span>
                             {/if}
                         </div>
                     </div>
-                    {#if editorMode === 'visual'}
+                    <ShDialog bind:open={syntaxDialogOpen} size="lg" closeOnEscape contentClass="prompt-v2-tool-dialog">
+                        {#snippet title()}{language.promptV2.conditionDesigner}{/snippet}
                         <div class="syntax-palette" data-prompt-v2-syntax-palette>
                             <div class="syntax-palette-heading">
                                 <div>
@@ -559,12 +664,16 @@
                                 </ShButton>
                             </div>
                         </div>
+                    </ShDialog>
+                    {#if editorMode === 'visual'}
                         <div class="prompt-body-visual" use:persistElementHeight={'prompt-v2-body'}>
                             <CbsConditionView
                                 bind:this={visualBodyField}
                                 value={parsedText.body}
                                 onInput={applyText}
                                 variableLabels={visualVariableLabels}
+                                switchVariables={definitions.filter(definition => definition.type === 'switch').map(definition => definition.key)}
+                                previewSegments={bodyPreviewSegments}
                                 showVariableSidebar={false}
                                 onSelectionChange={updateBodySelection}
                             />
@@ -599,122 +708,6 @@
                     {/if}
                 </section>
             {/if}
-
-            <details class="editor-card mt-4" open={!textSource}>
-                <summary class="flex min-h-9 cursor-pointer list-none items-center gap-2 text-sm font-semibold">
-                    <Settings2Icon size={15} class="text-textcolor2" />
-                    {language.promptV2.blockSettings}
-                </summary>
-                <div class="mt-4 grid gap-4 sm:grid-cols-2">
-                    <label class="field-label sm:col-span-2">
-                        <span>{language.name}</span>
-                        <input class="field-control" value={item.name ?? ''} oninput={(event) => patchItem({ name: event.currentTarget.value })} />
-                    </label>
-                    <label class="field-label">
-                        <span>{language.type}</span>
-                        <select class="field-control" value={item.type} onchange={(event) => replaceType(event.currentTarget.value as PromptType)}>
-                            <option value="plain">{language.formating.plain}</option>
-                            <option value="jailbreak">{language.formating.jailbreak}</option>
-                            <option value="chat">{language.Chat}</option>
-                            <option value="persona">{language.formating.personaPrompt}</option>
-                            <option value="description">{language.formating.description}</option>
-                            <option value="authornote">{language.formating.authorNote}</option>
-                            <option value="lorebook">{language.formating.lorebook}</option>
-                            <option value="memory">{language.formating.memory}</option>
-                            <option value="postEverything">{language.formating.postEverything}</option>
-                            <option value="chatML">ChatML</option>
-                            <option value="cache">{language.cachePoint}</option>
-                            <option value="cot">{language.cot}</option>
-                        </select>
-                    </label>
-
-                    {#if item.type === 'plain' || item.type === 'jailbreak' || item.type === 'cot'}
-                        <label class="field-label">
-                            <span>{language.specialType}</span>
-                            <select class="field-control" value={item.type2} onchange={(event) => patchItem({ type2: event.currentTarget.value })}>
-                                <option value="normal">{language.noSpecialType}</option>
-                                <option value="main">{language.mainPrompt}</option>
-                                <option value="globalNote">{language.globalNote}</option>
-                            </select>
-                        </label>
-                        <label class="field-label">
-                            <span>{language.role}</span>
-                            <select class="field-control" value={item.role} onchange={(event) => patchItem({ role: event.currentTarget.value })}>
-                                <option value="user">{language.user}</option>
-                                <option value="bot">{language.character}</option>
-                                <option value="system">{language.systemPrompt}</option>
-                            </select>
-                        </label>
-                    {/if}
-
-                    {#if hasRole2(item)}
-                        <label class="field-label">
-                            <span>{language.role}</span>
-                            <select class="field-control" value={item.role2 ?? 'system'} onchange={(event) => patchItem({ role2: event.currentTarget.value })}>
-                                <option value="user">{language.user}</option>
-                                <option value="bot">{language.character}</option>
-                                <option value="system">{language.systemPrompt}</option>
-                            </select>
-                        </label>
-                    {/if}
-
-                    {#if item.type === 'authornote'}
-                        <label class="field-label sm:col-span-2">
-                            <span>{language.defaultPrompt}</span>
-                            <input class="field-control" value={item.defaultText ?? ''} oninput={(event) => patchItem({ defaultText: event.currentTarget.value })} />
-                        </label>
-                    {/if}
-
-                    {#if item.type === 'cache'}
-                        <label class="field-label">
-                            <span>{language.depth}</span>
-                            <input class="field-control" type="number" min="0" value={item.depth} oninput={(event) => patchItem({ depth: Number(event.currentTarget.value) })} />
-                        </label>
-                        <label class="field-label">
-                            <span>{language.role}</span>
-                            <select class="field-control" value={item.role} onchange={(event) => patchItem({ role: event.currentTarget.value })}>
-                                <option value="all">{language.all}</option>
-                                <option value="user">{language.user}</option>
-                                <option value="assistant">{language.character}</option>
-                                <option value="system">{language.systemPrompt}</option>
-                            </select>
-                        </label>
-                    {/if}
-
-                    {#if item.type === 'chat'}
-                        <div class="flex items-center justify-between gap-3 sm:col-span-2">
-                            <div>
-                                <div class="text-sm">{language.advanced}</div>
-                                <div class="mt-1 text-xs text-textcolor2">{language.untilChatEnd}</div>
-                            </div>
-                            <ShSwitch
-                                checked={item.rangeStart !== -1000}
-                                onCheckedChange={(checked) => patchItem({ rangeStart: checked ? 0 : -1000, rangeEnd: 'end' })}
-                            />
-                        </div>
-                        {#if item.rangeStart !== -1000}
-                            <label class="field-label">
-                                <span>{language.rangeStart}</span>
-                                <input class="field-control" type="number" value={item.rangeStart} oninput={(event) => patchItem({ rangeStart: Number(event.currentTarget.value) })} />
-                            </label>
-                            <label class="field-label">
-                                <span>{language.rangeEnd}</span>
-                                <input
-                                    class="field-control"
-                                    type="number"
-                                    disabled={item.rangeEnd === 'end'}
-                                    value={item.rangeEnd === 'end' ? 0 : item.rangeEnd}
-                                    oninput={(event) => patchItem({ rangeEnd: Number(event.currentTarget.value) })}
-                                />
-                                <label class="mt-2 flex items-center gap-2 text-xs text-textcolor2">
-                                    <input type="checkbox" checked={item.rangeEnd === 'end'} onchange={(event) => patchItem({ rangeEnd: event.currentTarget.checked ? 'end' : 0 })} />
-                                    {language.untilChatEnd}
-                                </label>
-                            </label>
-                        {/if}
-                    {/if}
-                </div>
-            </details>
 
             {#if textSource && parsedText?.editable}
                 <details class="editor-card mt-4">
@@ -754,20 +747,99 @@
 {/if}
 
 <style>
+    .prompt-v2-editor-header {
+        display: flex;
+        min-width: 0;
+        align-items: center;
+        justify-content: space-between;
+        gap: .75rem;
+        border-bottom: 1px solid var(--color-darkborderc);
+        padding: .5rem .75rem;
+    }
+
+    .editor-title-control {
+        display: flex;
+        min-width: 8rem;
+        flex: 1 1 14rem;
+        align-items: center;
+        gap: .45rem;
+    }
+
+    .editor-title-button,
+    .editor-title-input {
+        min-width: 0;
+        width: 100%;
+        height: 2rem;
+        border: 1px solid transparent;
+        border-radius: .4rem;
+        padding: .25rem .45rem;
+        color: var(--color-textcolor);
+        background: transparent;
+        font-size: .88rem;
+        font-weight: 650;
+        text-align: left;
+        outline: none;
+    }
+
+    .editor-title-button { display: flex; align-items: center; gap: .4rem; cursor: text; }
+    .editor-title-button :global(svg) { flex-shrink: 0; color: var(--color-textcolor2); opacity: 0; }
+    .editor-title-button:hover { border-color: var(--color-darkborderc); background: color-mix(in srgb, var(--color-selected) 24%, transparent); }
+    .editor-title-button:hover :global(svg), .editor-title-button:focus-visible :global(svg) { opacity: 1; }
+    .editor-title-button:focus-visible, .editor-title-input:focus { border-color: var(--color-borderc); box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-borderc) 40%, transparent); }
+
+    .editor-header-fields {
+        display: flex;
+        min-width: 0;
+        flex: 0 1 auto;
+        align-items: center;
+        justify-content: flex-end;
+        gap: .5rem;
+    }
+
+    .editor-header-fields label { display: flex; align-items: center; gap: .3rem; }
+    .editor-header-fields label > span { color: var(--color-textcolor2); font-size: .66rem; white-space: nowrap; }
+    .editor-header-fields select {
+        width: clamp(5.75rem, 8vw, 8.5rem);
+        height: 2rem;
+        border: 1px solid var(--color-darkborderc);
+        border-radius: .4rem;
+        padding: .2rem .45rem;
+        color: var(--color-textcolor);
+        background: var(--color-darkbg);
+        font-size: .72rem;
+        outline: none;
+    }
+    .editor-header-fields select:focus { border-color: var(--color-borderc); box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-borderc) 40%, transparent); }
+
+    .editor-toolbar {
+        display: flex;
+        min-height: 3rem;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: .5rem;
+        border-bottom: 1px solid var(--color-darkborderc);
+        padding: .4rem .75rem;
+        background: color-mix(in srgb, var(--color-darkbutton) 26%, transparent);
+    }
+
+    .toolbar-control {
+        display: inline-flex;
+        min-height: 2rem;
+        align-items: center;
+        gap: .55rem;
+        padding-right: .15rem;
+    }
+
+    :global(.prompt-v2-tool-dialog) {
+        width: min(calc(100vw - 2rem), 46rem);
+        max-width: calc(100vw - 2rem);
+    }
+
     .editor-card {
         border: 1px solid var(--color-darkborderc);
         border-radius: .75rem;
         background: color-mix(in srgb, var(--color-darkbg) 78%, transparent);
         padding: 1rem;
-    }
-
-    .field-label {
-        display: flex;
-        min-width: 0;
-        flex-direction: column;
-        gap: .4rem;
-        color: var(--color-textcolor2);
-        font-size: .75rem;
     }
 
     .field-control {
@@ -780,27 +852,6 @@
         background: transparent;
         outline: none;
         transition: color 160ms ease, background-color 160ms ease, border-color 160ms ease;
-    }
-
-    .preview-state-pill {
-        border: 1px solid var(--color-darkborderc);
-        border-radius: 999px;
-        padding: .08rem .45rem;
-        font-size: .68rem;
-        font-weight: 650;
-        line-height: 1.35;
-    }
-
-    .preview-state-pill--active {
-        border-color: var(--color-info-border);
-        color: var(--color-info);
-        background: var(--color-info-bg);
-    }
-
-    .preview-state-pill--inactive {
-        color: var(--color-textcolor2);
-        background: var(--color-darkbutton);
-        opacity: .72;
     }
 
     .field-control:focus {
@@ -836,6 +887,7 @@
 
     .editor-mode-tabs {
         display: inline-flex;
+        margin-left: auto;
         padding: .15rem;
         border: 1px solid var(--color-darkborderc);
         border-radius: .45rem;
@@ -843,21 +895,25 @@
     }
 
     .editor-mode-tabs button {
-        min-height: 1.65rem;
-        padding: .2rem .55rem;
+        min-height: 2.25rem;
+        padding: .35rem .65rem;
         border: 0;
         border-radius: .3rem;
         color: var(--color-textcolor2);
         background: transparent;
-        font-size: .7rem;
+        font-size: .78rem;
+        font-weight: 600;
         cursor: pointer;
     }
 
     .editor-mode-tabs button[aria-pressed='true'] {
-        color: var(--color-textcolor);
-        background: var(--color-selected);
-        box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-borderc) 55%, transparent);
+        color: var(--color-binding-text);
+        background: var(--color-binding);
+        box-shadow: inset 0 0 0 1px var(--color-binding-border);
     }
+
+    .editor-mode-tabs button:hover { color: var(--color-textcolor); background: color-mix(in srgb, var(--color-selected) 30%, transparent); }
+    .editor-mode-tabs button[aria-pressed='true']:hover { color: var(--color-binding-text); background: var(--color-binding); }
 
     .editor-mode-tabs button:focus-visible {
         outline: 1px solid var(--color-borderc);
@@ -996,6 +1052,9 @@
     .prompt-body-field:read-only { opacity: .72; }
 
     @media (max-width: 720px) {
+        .prompt-v2-editor-header { align-items: stretch; flex-direction: column; }
+        .editor-title-control, .editor-header-fields { width: 100%; }
+        .editor-header-fields { justify-content: flex-start; overflow-x: auto; padding-bottom: .15rem; }
         .condition-row { grid-template-columns: 1.75rem minmax(0, 1fr) 2rem; }
         .condition-row > :global(:nth-child(3)),
         .condition-row > :global(:nth-child(4)) { grid-column: 2 / 3; width: 100%; }

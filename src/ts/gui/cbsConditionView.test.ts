@@ -4,6 +4,11 @@ import { collectCbsVariables, parseCbsConditionView, summarizeCbsCondition } fro
 const gate = '{{#if {{or::{{equal::{{getvar::cv_g8}}::1}}::{{equal::{{getvar::cv_spoiler}}::request}}::{{equal::{{getvar::cv_spoiler}}::open}}}}}}'
 
 describe('CBS condition view', () => {
+    it('labels the toggle comparison used by the overview block', () => {
+        expect(summarizeCbsCondition('{{#when::commonplace_book::tis::1}}', {
+            variableLabels: { toggle_commonplace_book: '비망록 활성화' },
+        }).text).toBe('비망록 활성화 = "1"')
+    })
     it('collects static variable names and literal values without treating comparisons as definitions', () => {
         const variables = collectCbsVariables(gate + '{{setvar::cv_g8::0}}{{getvar::cv_g8}}{{getvar::{{getvar::key}}}}')
         expect(variables).toEqual([

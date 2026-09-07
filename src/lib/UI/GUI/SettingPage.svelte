@@ -6,22 +6,26 @@
         title,
         description,
         showTitle = true,
+        fullWidth = false,
         resizable = false,
         wide = false,
         unboundedHeight = false,
         resizeStorageKey,
         children,
         leading,
+        headerActions,
     }: {
         title: string;
         description?: string;
         showTitle?: boolean;
+        fullWidth?: boolean;
         resizable?: boolean;
         wide?: boolean;
         unboundedHeight?: boolean;
         resizeStorageKey?: string;
         children?: Snippet;
         leading?: Snippet;
+        headerActions?: Snippet;
     } = $props();
     let pageElement: HTMLElement | null = $state(null);
 </script>
@@ -30,17 +34,17 @@
     bind:this={pageElement}
     data-settings-page
     class="settings-standard-page"
+    class:settings-standard-page--full-width={fullWidth}
     class:settings-standard-page--resizable={resizable}
     class:settings-standard-page--wide={wide}
     class:settings-standard-page--unbounded-height={unboundedHeight}
 >
     {#if showTitle}
         <header data-settings-page-header class="settings-standard-page__header">
-            {#if leading}
-                <div class="settings-standard-page__title-row">{@render leading()}<h1>{title}</h1></div>
-            {:else}
-                <h1>{title}</h1>
-            {/if}
+            <div class="settings-standard-page__title-row">
+                <div class="settings-standard-page__title">{@render leading?.()}<h1>{title}</h1></div>
+                {@render headerActions?.()}
+            </div>
             {#if description}
                 <p>{description}</p>
             {/if}
@@ -53,7 +57,15 @@
 </section>
 
 <style>
-    .settings-standard-page__title-row { display: flex; align-items: center; gap: .75rem; }
+    .settings-standard-page__title-row { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+    .settings-standard-page__title { display: flex; min-width: 0; align-items: center; gap: .75rem; }
+    .settings-standard-page--full-width { width: 100%; max-width: 100%; height: 100%; min-height: 0; }
+    .settings-standard-page--full-width > .settings-standard-page__header { max-width: none; margin-bottom: 1rem; }
+    .settings-standard-page--full-width > .settings-standard-page__body { flex: 1; min-height: 0; overflow: hidden; }
+    .settings-standard-page--full-width > .settings-standard-page__body > :global([data-settings-section-tabs]) { flex-shrink: 0; }
+    @media (max-width: 640px) {
+        .settings-standard-page__title-row { align-items: stretch; flex-direction: column; }
+    }
     .settings-standard-page--resizable {
         position: relative;
         left: 50%;
