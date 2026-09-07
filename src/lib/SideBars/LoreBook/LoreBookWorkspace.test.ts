@@ -654,7 +654,7 @@ describe('LoreBookWorkspace', () => {
         expect(summary.querySelector('[data-cbs-token="literal"]')?.textContent).toBe('"1"')
         expect(summary.textContent).toContain('OR <img src=x onerror=alert(1)>')
         expect(summary.querySelector('img')).toBeNull()
-        click('.condition summary')
+        click('.condition-block summary')
         await tick()
         expect(document.body.querySelector('.condition-source')?.textContent).toBe(opening)
         expect(onChange).not.toHaveBeenCalled()
@@ -793,7 +793,9 @@ describe('LoreBookWorkspace', () => {
         expect(document.body.querySelector('[data-cbs-view-toggle]')).not.toBeNull()
         click('[data-cbs-view-toggle]')
         await tick()
-        expect(document.body.textContent).toContain('$cv_g8 = "1"')
+        const summary = document.body.querySelector('[data-cbs-summary]')!
+        expect(summary.querySelector('[data-cbs-token="variable"]')?.textContent).toContain('$cv_g8')
+        expect(summary.querySelector('[data-cbs-token="literal"]')?.textContent).toBe('"1"')
         const body = document.body.querySelector<HTMLTextAreaElement>('[data-cbs-body]')!
         expect(body.value).toBe('Original body')
         body.value = 'Edited body'
