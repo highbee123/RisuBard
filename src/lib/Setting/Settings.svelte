@@ -220,6 +220,10 @@
         padding: 4.5rem var(--settings-page-gutter) 7rem;
     }
 
+    .settings-page:has(> :global(.settings-standard-page--resizable)) {
+        padding-bottom: 0;
+    }
+
     :global(.settings-standard-page) {
         min-width: 0;
         display: flex;

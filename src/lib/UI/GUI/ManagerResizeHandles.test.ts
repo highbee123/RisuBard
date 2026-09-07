@@ -12,14 +12,18 @@ afterEach(async () => {
     vi.restoreAllMocks()
 })
 
-async function manager() {
+async function manager(resizeStorageKey?: string) {
     const host = document.body.appendChild(document.createElement('div'))
     host.className = 'settings-content'
     Object.defineProperty(host, 'clientWidth', { value: 1000 })
-    mounted = mount(SettingPage, { target: host, props: { title: 'Modules', resizable: true } })
+    mounted = mount(SettingPage, { target: host, props: { title: 'Modules', resizable: true, resizeStorageKey } })
     await tick()
     const page = host.querySelector<HTMLElement>('[data-settings-page]')!
-    page.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 800, bottom: 500, width: 800, height: 500, toJSON() {} })
+    page.getBoundingClientRect = () => {
+        const width = parseFloat(page.style.getPropertyValue('--manager-width')) || 800
+        const height = parseFloat(page.style.getPropertyValue('--manager-height')) || 500
+        return { x: 0, y: 0, left: 0, top: 0, right: width, bottom: height, width, height, toJSON() {} }
+    }
     const handle = page.querySelector<HTMLElement>('[data-manager-window-resize="se"]')
     expect(handle, 'resizable managers expose a visible corner handle').not.toBeNull()
     return { host, page, handle: handle! }
@@ -103,6 +107,19 @@ describe('manager window resize controls', () => {
         expect(onResizeEnd).toHaveBeenCalledWith(target)
     })
 
+    test('restores, updates, and resets a named frame size', async () => {
+        localStorage.setItem('risubard:resizable-size:v1:prompt-v2-frame', JSON.stringify({ width: 900, height: 700 }))
+        const { page, handle } = await manager('prompt-v2-frame')
+        expect(page.style.getPropertyValue('--manager-width')).toBe('900px')
+        expect(page.style.getPropertyValue('--manager-height')).toBe('700px')
+
+        handle.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+        expect(JSON.parse(localStorage.getItem('risubard:resizable-size:v1:prompt-v2-frame')!)).toEqual({ width: 932, height: 700 })
+
+        handle.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }))
+        expect(localStorage.getItem('risubard:resizable-size:v1:prompt-v2-frame')).toBeNull()
+    })
+
     test('uses the full settings width for resizable managers while keeping preset comparison bounded', () => {
         const settingPage = readFileSync('src/lib/UI/GUI/SettingPage.svelte', 'utf8')
         const settings = readFileSync('src/lib/Setting/Settings.svelte', 'utf8')
@@ -110,6 +127,7 @@ describe('manager window resize controls', () => {
         expect(settingPage).toContain('width: var(--manager-width, 100%)')
         expect(settingPage).toContain('max-width: calc(100vw - 1rem)')
         expect(settings).toContain('settings-page--collection')
+        expect(settings).toMatch(/\.settings-page:has\(> :global\(\.settings-standard-page--resizable\)\)[^{]*\{[^}]*padding-bottom:\s*0/s)
         expect(settings).toContain('.settings-content--mobile-collection:has(:global(.settings-standard-page--resizable))')
         expect(presets).toContain('83.2rem')
         expect(presets).toContain('<ManagerResizeHandles')

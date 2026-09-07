@@ -9,7 +9,9 @@
         resizable = false,
         wide = false,
         unboundedHeight = false,
+        resizeStorageKey,
         children,
+        leading,
     }: {
         title: string;
         description?: string;
@@ -17,7 +19,9 @@
         resizable?: boolean;
         wide?: boolean;
         unboundedHeight?: boolean;
+        resizeStorageKey?: string;
         children?: Snippet;
+        leading?: Snippet;
     } = $props();
     let pageElement: HTMLElement | null = $state(null);
 </script>
@@ -32,7 +36,11 @@
 >
     {#if showTitle}
         <header data-settings-page-header class="settings-standard-page__header">
-            <h1>{title}</h1>
+            {#if leading}
+                <div class="settings-standard-page__title-row">{@render leading()}<h1>{title}</h1></div>
+            {:else}
+                <h1>{title}</h1>
+            {/if}
             {#if description}
                 <p>{description}</p>
             {/if}
@@ -41,10 +49,11 @@
     <div data-settings-page-body class="settings-standard-page__body">
         {@render children?.()}
     </div>
-    {#if resizable}<ManagerResizeHandles target={pageElement} centered {unboundedHeight} />{/if}
+    {#if resizable}<ManagerResizeHandles target={pageElement} centered {unboundedHeight} {resizeStorageKey} />{/if}
 </section>
 
 <style>
+    .settings-standard-page__title-row { display: flex; align-items: center; gap: .75rem; }
     .settings-standard-page--resizable {
         position: relative;
         left: 50%;

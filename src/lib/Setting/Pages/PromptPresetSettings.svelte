@@ -31,6 +31,7 @@
     resizable={$PromptPresetSubmenuIndex === 2}
     wide={$PromptPresetSubmenuIndex === 2}
     unboundedHeight={$PromptPresetSubmenuIndex === 2}
+    resizeStorageKey="prompt-v2-frame"
 >
     <PresetHeader
         label={language.currentPromptPreset}

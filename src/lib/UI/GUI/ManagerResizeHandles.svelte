@@ -1,14 +1,30 @@
 <script lang="ts">
     import { language } from 'src/lang'
     import { resizeHandle } from 'src/ts/gui/resizeHandle'
+    import { clearResizableSize, loadResizableSize, saveResizableSize } from 'src/ts/gui/resizableSize'
 
-    let { target, centered = false, unboundedHeight = false, onResizeEnd }: {
+    let { target, centered = false, unboundedHeight = false, resizeStorageKey, onResizeEnd }: {
         target: HTMLElement | null
         centered?: boolean
         unboundedHeight?: boolean
+        resizeStorageKey?: string
         onResizeEnd?: (target: HTMLElement) => void
     } = $props()
     const edges = $derived(centered ? ['n', 'e', 's', 'w', 'ne', 'se', 'sw', 'nw'] : ['e', 's', 'se'])
+    let restoredTarget: HTMLElement | null = null
+    let restoredKey = ''
+    let skipNextPersistence = false
+
+    $effect(() => {
+        const element = target
+        const key = resizeStorageKey
+        if (!element || !key || (restoredTarget === element && restoredKey === key)) return
+        const saved = loadResizableSize(key)
+        if (saved?.width) element.style.setProperty('--manager-width', `${saved.width}px`)
+        if (saved?.height) element.style.setProperty('--manager-height', `${saved.height}px`)
+        restoredTarget = element
+        restoredKey = key
+    })
 
     function startResize(edge: string) {
         const element = target
@@ -37,9 +53,16 @@
     function resetSize() {
         target?.style.removeProperty('--manager-width')
         target?.style.removeProperty('--manager-height')
+        if (resizeStorageKey) clearResizableSize(resizeStorageKey)
+        skipNextPersistence = true
     }
 
     function finishResize() {
+        if (!skipNextPersistence && target && resizeStorageKey) {
+            const { width, height } = target.getBoundingClientRect()
+            saveResizableSize(resizeStorageKey, { width, height })
+        }
+        skipNextPersistence = false
         if (target) onResizeEnd?.(target)
     }
 </script>
