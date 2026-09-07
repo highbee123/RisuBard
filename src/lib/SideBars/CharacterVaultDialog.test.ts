@@ -120,7 +120,6 @@ describe('CharacterVaultDialog', () => {
     afterEach(async () => {
         if (mounted) await unmount(mounted)
         mounted = undefined
-        await new Promise((resolve) => window.setTimeout(resolve, 30))
         document.body.replaceChildren()
     })
 
