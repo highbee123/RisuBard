@@ -6,12 +6,15 @@
     import { resizeHandle } from 'src/ts/gui/resizeHandle'
     import CbsVariableList from './CbsVariableList.svelte'
 
-    let { value, onInput, onblur, onkeydown, variableContext }: {
+    let { value, onInput, onblur, onkeydown, variableContext, variableLabels, showVariableSidebar = true, onSelectionChange }: {
         value: string
         onInput: (value: string) => void
         onblur?: () => void
         onkeydown?: (event: KeyboardEvent) => void
         variableContext?: CbsVariableContext
+        variableLabels?: Record<string, string>
+        showVariableSidebar?: boolean
+        onSelectionChange?: (selection: { start: number; end: number }) => void
     } = $props()
 
     let documentValue = $state('')
@@ -19,8 +22,9 @@
     const id = $props.id()
     let containerWidth = $state(0)
     let variablesPreference = $state<boolean | undefined>(undefined)
-    const variablesOpen = $derived(variablesPreference ?? containerWidth >= 360)
+    const variablesOpen = $derived(showVariableSidebar && (variablesPreference ?? containerWidth >= 360))
     let layoutElement: HTMLElement | undefined = $state()
+    let rootElement: HTMLElement | undefined = $state()
     const labels = $derived(language.cbsEditor)
 
     $effect.pre(() => {
@@ -44,6 +48,31 @@
     function finishEdit() {
         view = parseCbsConditionView(documentValue)
         onblur?.()
+    }
+
+    function reportSelection(index: number, event: Event) {
+        const part = view.parts[index]
+        const field = event.currentTarget as HTMLTextAreaElement
+        onSelectionChange?.({ start: part.from + field.selectionStart, end: part.from + field.selectionEnd })
+    }
+
+    export function focusSelection(start: number, end: number) {
+        const fields = rootElement?.querySelectorAll<HTMLTextAreaElement>('[data-cbs-body-index]')
+        if (!fields) return
+        for (const field of fields) {
+            const part = view.parts[Number(field.dataset.cbsBodyIndex)]
+            if (!part || part.kind !== 'text' || start < part.from || end > part.to) continue
+            field.focus()
+            field.setSelectionRange(start - part.from, end - part.from)
+            return
+        }
+    }
+
+    function expressionHasRaw(node: CbsConditionExpression): boolean {
+        if (node.kind === 'raw') return true
+        if (node.kind === 'logical') return node.children.some(expressionHasRaw)
+        if (node.kind === 'comparison') return expressionHasRaw(node.left) || expressionHasRaw(node.right)
+        return false
     }
 
     function startVariableResize() {
@@ -70,16 +99,18 @@
         <span class="condition-clause" data-cbs-clause>
             {@render renderExpression(node.left, true)}{' '}<span class="comparison-operator">{node.operator}</span>{' '}{@render renderExpression(node.right, true)}
         </span>
+    {:else if node.kind === 'variable'}
+        <span class="expression-leaf variable-leaf" data-cbs-token={node.kind} title={node.name}>[{node.text}]</span>
     {:else}
         <span class="expression-leaf" data-cbs-token={node.kind}>{node.text}</span>
     {/if}
 {/snippet}
 
-<div class="cbs-condition-view" data-cbs-condition-view bind:clientWidth={containerWidth}>
+<div class="cbs-condition-view" data-cbs-condition-view bind:this={rootElement} bind:clientWidth={containerWidth}>
     <div class="view-tools">
         {#if !view.valid}<button type="button" class="tip-icon" aria-label={labels.fallback} use:tooltip={labels.fallback}>!</button>{/if}
         <button type="button" class="tip-icon" aria-label={labels.description} use:tooltip={labels.description}>?</button>
-        <button type="button" class="variable-toggle" data-cbs-variable-toggle
+        {#if showVariableSidebar}<button type="button" class="variable-toggle" data-cbs-variable-toggle
             aria-controls={`${id}-variables`} aria-expanded={variablesOpen}
             aria-label={variablesOpen ? labels.hideVariables : labels.showVariables}
             use:tooltip={variablesOpen ? labels.hideVariables : labels.showVariables}
@@ -89,7 +120,7 @@
                 <path d="M10 2v12" />
             </svg>
             {labels.variables}
-        </button>
+        </button>{/if}
     </div>
     <div class="view-layout" class:variables-open={variablesOpen} bind:this={layoutElement}>
     <div class="cbs-document" data-cbs-document>
@@ -105,15 +136,21 @@
                         rows={Math.max(1, Math.min(24, source.split('\n').length))}
                         spellcheck="false"
                         oninput={(event) => edit(index, event.currentTarget.value)}
+                        onselect={(event) => reportSelection(index, event)}
+                        onfocus={(event) => reportSelection(index, event)}
                         onblur={finishEdit}
                         {onkeydown}
+                        data-cbs-body-index={index}
                     ></textarea>
                 {:else}
                     <div class="text-gap" aria-hidden="true"></div>
                 {/if}
             {:else if part.kind === 'condition'}
-                {@const summary = summarizeCbsCondition(source)}
-                {@const warnings = summary.warnings.map(warning => labels.extraArguments.replace('{name}', warning.name).replace('{actual}', String(warning.actual)).replace('{expected}', String(warning.expected))).join('\n')}
+                {@const summary = summarizeCbsCondition(source, { variableLabels })}
+                {@const warnings = [
+                    ...summary.warnings.map(warning => labels.extraArguments.replace('{name}', warning.name).replace('{actual}', String(warning.actual)).replace('{expected}', String(warning.expected))),
+                    ...(expressionHasRaw(summary.expression) ? [labels.unsupportedExpression] : []),
+                ].join('\n')}
                 <div class="condition-row">
                 <details class="condition">
                     <summary aria-label={`${labels.condition} ${summary.text}`} use:tooltip={labels.showSource + '\n' + labels.editSource}>
@@ -132,13 +169,13 @@
         </div>
     {/each}
     </div>
-    <button type="button" class="variable-splitter" data-cbs-variable-splitter hidden={!variablesOpen}
+    {#if showVariableSidebar}<button type="button" class="variable-splitter" data-cbs-variable-splitter hidden={!variablesOpen}
         aria-label={labels.resizeVariables} use:tooltip={language.lorebookWorkspace.resizeHint}
         use:resizeHandle={{ start: startVariableResize, reset: () => layoutElement?.style.removeProperty('--cbs-variable-width') }}></button>
     <aside class="variable-sidebar" data-cbs-variable-sidebar id={`${id}-variables`}
         aria-label={labels.variables} hidden={!variablesOpen}>
         <CbsVariableList source={documentValue} context={variableContext} />
-    </aside>
+    </aside>{/if}
     </div>
 </div>
 
@@ -170,6 +207,7 @@
     .condition-clause { display: inline-flex; flex-wrap: wrap; align-items: baseline; column-gap: .3rem; }
     .condition-clause > .expression-leaf { padding: 0; border: 0; border-radius: 0; background: transparent; }
     [data-cbs-token='variable'] { color: var(--color-textcolor); font-weight: 600; }
+    .variable-leaf { border-color: color-mix(in srgb, var(--color-primary) 45%, var(--color-darkborderc)); background: color-mix(in srgb, var(--color-primary) 16%, var(--color-darkbg)); }
     [data-cbs-token='literal'] { color: color-mix(in srgb, var(--color-textcolor) 85%, var(--color-primary)); }
     [data-cbs-token='raw'], .comparison-operator { color: var(--color-textcolor2); }
     .logical-operator { flex-shrink: 0; padding: .1rem .35rem; border: 1px solid color-mix(in srgb, var(--color-primary) 40%, var(--color-darkborderc)); border-radius: .25rem; background: color-mix(in srgb, var(--color-primary) 18%, var(--color-darkbg)); color: color-mix(in srgb, var(--color-primary) 45%, var(--color-textcolor)); font-family: inherit; font-size: .65rem; font-weight: 750; letter-spacing: .035em; }

@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { tick } from 'svelte'
     import {
         AlertTriangleIcon,
         BracesIcon,
@@ -18,12 +19,19 @@
         createPromptV2BodyPreviewSegments,
         evaluatePromptV2Activation,
         getPromptV2TextSource,
+        insertPromptV2BodyCondition,
+        loadPromptV2EditorMode,
         parsePromptV2Text,
+        savePromptV2EditorMode,
         setPromptV2TextSource,
         type PromptV2Activation,
         type PromptV2Condition,
+        type PromptV2EditorMode,
+        type PromptV2Join,
+        type PromptV2Operator,
         type PromptV2ToggleDefinition,
     } from 'src/ts/promptV2'
+    import CbsConditionView from 'src/lib/UI/GUI/CbsConditionView.svelte'
     import ShAlert from 'src/lib/UI/GUI/ShAlert.svelte'
     import ShButton from 'src/lib/UI/GUI/ShButton.svelte'
     import ShSwitch from 'src/lib/UI/GUI/ShSwitch.svelte'
@@ -48,10 +56,17 @@
     let conditionError = $state('')
     let bodyPreviewElement: HTMLPreElement | undefined = $state()
     let bodyField: HTMLTextAreaElement | undefined = $state()
+    let visualBodyField: { focusSelection: (start: number, end: number) => void } | undefined = $state()
+    let editorMode = $state<PromptV2EditorMode>(loadPromptV2EditorMode())
+    let bodySelection = $state({ start: 0, end: 0 })
+    let bodySyntaxJoin = $state<PromptV2Join>('and')
+    let bodySyntaxConditions = $state<PromptV2Condition[]>([])
     let lastSearch: { item: PromptItem; query: string } | undefined
 
-    export function findInBody(search: string) {
-        if (!bodyField || !item) return
+    export async function findInBody(search: string) {
+        if (!item) return
+        if (editorMode !== 'source') await setEditorMode('source')
+        if (!bodyField) return
         const query = search.trim()
         const continuing = lastSearch?.item === item && lastSearch.query === query
         const match = findTextareaMatch(bodyField.value, query, continuing ? bodyField.selectionEnd : 0)
@@ -74,6 +89,7 @@
             : [],
     )
     const hasBodyPreview = $derived(bodyPreviewSegments.some((segment) => segment.state !== 'neutral'))
+    const visualVariableLabels = $derived(Object.fromEntries(definitions.map((definition) => [definition.key, definition.label])))
     const visibleDefinitions = $derived.by(() => {
         const query = variableSearch.trim().toLocaleLowerCase()
         if (!query) return definitions
@@ -82,6 +98,12 @@
             || definition.key.toLocaleLowerCase().includes(query)
             || definition.group?.toLocaleLowerCase().includes(query),
         )
+    })
+
+    $effect(() => {
+        if (bodySyntaxConditions.length === 0 && definitions[0]) {
+            bodySyntaxConditions = [{ key: definitions[0].key, operator: 'is', value: defaultValue(definitions[0]) }]
+        }
     })
 
     function patchItem(patch: Record<string, unknown>) {
@@ -158,6 +180,64 @@
         } else {
             updateActivation({ conditions })
         }
+    }
+
+    async function setEditorMode(mode: PromptV2EditorMode) {
+        if (mode === editorMode) return
+        if (bodyField) bodySelection = { start: bodyField.selectionStart, end: bodyField.selectionEnd }
+        editorMode = mode
+        savePromptV2EditorMode(mode)
+        await tick()
+        if (mode === 'source' && bodyField) {
+            bodyField.focus()
+            bodyField.setSelectionRange(bodySelection.start, bodySelection.end)
+        } else {
+            visualBodyField?.focusSelection(bodySelection.start, bodySelection.end)
+        }
+    }
+
+    function updateBodySelection(selection?: { start: number; end: number }) {
+        if (selection) bodySelection = selection
+        else if (bodyField) bodySelection = { start: bodyField.selectionStart, end: bodyField.selectionEnd }
+    }
+
+    function updateBodySyntaxCondition(index: number, patch: Partial<PromptV2Condition>) {
+        bodySyntaxConditions = bodySyntaxConditions.map((condition, conditionIndex) =>
+            conditionIndex === index ? { ...condition, ...patch } : condition,
+        )
+    }
+
+    function selectBodySyntaxVariable(index: number, key: string) {
+        const definition = definitions.find((entry) => entry.key === key)
+        updateBodySyntaxCondition(index, { key, value: defaultValue(definition) })
+    }
+
+    function addBodySyntaxCondition() {
+        const definition = definitions[0]
+        if (!definition) return
+        bodySyntaxConditions = [
+            ...bodySyntaxConditions,
+            { key: definition.key, operator: 'is', value: defaultValue(definition) },
+        ]
+    }
+
+    function removeBodySyntaxCondition(index: number) {
+        if (bodySyntaxConditions.length <= 1) return
+        bodySyntaxConditions = bodySyntaxConditions.filter((_, conditionIndex) => conditionIndex !== index)
+    }
+
+    async function insertBodyCondition() {
+        if (!parsedText || bodySyntaxConditions.length === 0) return
+        const result = insertPromptV2BodyCondition(
+            parsedText.body,
+            bodySelection.start,
+            bodySelection.end,
+            { join: bodySyntaxJoin, conditions: bodySyntaxConditions },
+        )
+        bodySelection = { start: result.selectionStart, end: result.selectionEnd }
+        applyText(result.body)
+        await tick()
+        visualBodyField?.focusSelection(result.selectionStart, result.selectionEnd)
     }
 
     function replaceType(type: PromptType) {
@@ -274,10 +354,14 @@
                                         class="field-control w-28 shrink-0"
                                         value={condition.operator}
                                         aria-label={language.promptV2.activation}
-                                        onchange={(event) => updateCondition(conditionIndex, { operator: event.currentTarget.value as 'is' | 'isnot' })}
+                                        onchange={(event) => updateCondition(conditionIndex, { operator: event.currentTarget.value as PromptV2Operator })}
                                     >
                                         <option value="is">{language.promptV2.is}</option>
                                         <option value="isnot">{language.promptV2.isNot}</option>
+                                        <option value="greater">&gt;</option>
+                                        <option value="greaterequal">≥</option>
+                                        <option value="less">&lt;</option>
+                                        <option value="lessequal">≤</option>
                                     </select>
 
                                     {#if definition?.type === 'switch'}
@@ -356,11 +440,19 @@
 
             {#if textSource && parsedText}
                 <section class="editor-card mt-4">
-                    <div class="mb-3 flex items-center justify-between gap-2">
+                    <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
                         <h3 class="text-sm font-semibold">
                             {textSource.field === 'innerFormat' ? language.promptV2.innerFormat : language.promptV2.promptBody}
                         </h3>
                         <div class="flex items-center gap-2">
+                            <div class="editor-mode-tabs" aria-label={language.promptV2.editorMode}>
+                                <button type="button" aria-pressed={editorMode === 'source'} onclick={() => setEditorMode('source')}>
+                                    {language.promptV2.sourceMode}
+                                </button>
+                                <button type="button" aria-pressed={editorMode === 'visual'} onclick={() => setEditorMode('visual')}>
+                                    {language.promptV2.visualMode}
+                                </button>
+                            </div>
                             {#if previewState !== null}
                                 <span
                                     class="preview-state-pill"
@@ -375,31 +467,136 @@
                             {/if}
                         </div>
                     </div>
-                    <div
-                        class="prompt-body-editor"
-                        class:prompt-body-editor--active={previewState === true}
-                        class:prompt-body-editor--inactive={previewState === false}
-                    >
-                        {#if hasBodyPreview}
-                            <pre class="prompt-body-preview" bind:this={bodyPreviewElement} aria-hidden="true">{#each bodyPreviewSegments as segment}<span
-                                class:prompt-body-preview-text--active={segment.state === 'active'}
-                                class:prompt-body-preview-text--inactive={segment.state === 'inactive'}
-                            >{segment.text}</span>{/each}{'\n'}</pre>
-                        {/if}
-                        <textarea
-                            class="prompt-body-field"
-                            bind:this={bodyField}
-                            use:persistElementHeight={'prompt-v2-body'}
-                            class:prompt-body-field--preview={hasBodyPreview}
-                            class:prompt-body-field--active={previewState === true}
-                            class:prompt-body-field--inactive={previewState === false}
-                            value={parsedText.body}
-                            readonly={!parsedText.editable}
-                            spellcheck="false"
-                            onscroll={syncBodyPreviewScroll}
-                            oninput={(event) => applyText(event.currentTarget.value)}
-                        ></textarea>
-                    </div>
+                    {#if editorMode === 'visual'}
+                        <div class="syntax-palette" data-prompt-v2-syntax-palette>
+                            <div class="syntax-palette-heading">
+                                <div>
+                                    <h4>{language.promptV2.syntaxPalette}</h4>
+                                    <p>{language.promptV2.syntaxPaletteHint}</p>
+                                </div>
+                                {#if bodySyntaxConditions.length > 1}
+                                    <select class="field-control syntax-join" bind:value={bodySyntaxJoin} aria-label={language.promptV2.conditionJoin}>
+                                        <option value="and">{language.promptV2.matchAll}</option>
+                                        <option value="or">{language.promptV2.matchAny}</option>
+                                    </select>
+                                {/if}
+                            </div>
+                            <div class="syntax-condition-list">
+                                {#each bodySyntaxConditions as condition, conditionIndex}
+                                    {@const definition = conditionDefinition(condition)}
+                                    <div class="syntax-condition-row">
+                                        <span class="condition-index">{conditionIndex + 1}</span>
+                                        <select
+                                            class="field-control"
+                                            value={condition.key}
+                                            aria-label={language.promptV2.rawVariableKey}
+                                            onchange={(event) => selectBodySyntaxVariable(conditionIndex, event.currentTarget.value)}
+                                        >
+                                            {#if !definition}<option value={condition.key}>{condition.key}</option>{/if}
+                                            {#each definitions as entry}
+                                                <option value={entry.key}>{entry.group ? `${entry.group} · ` : ''}{entry.label}</option>
+                                            {/each}
+                                        </select>
+                                        <select
+                                            class="field-control syntax-operator"
+                                            value={condition.operator}
+                                            aria-label={language.promptV2.conditionOperator}
+                                            onchange={(event) => updateBodySyntaxCondition(conditionIndex, { operator: event.currentTarget.value as PromptV2Operator })}
+                                        >
+                                            <option value="is">=</option>
+                                            <option value="isnot">≠</option>
+                                            <option value="greater">&gt;</option>
+                                            <option value="greaterequal">≥</option>
+                                            <option value="less">&lt;</option>
+                                            <option value="lessequal">≤</option>
+                                        </select>
+                                        {#if definition?.type === 'switch'}
+                                            <select
+                                                class="field-control syntax-value"
+                                                value={condition.value}
+                                                aria-label={language.promptV2.conditionValue}
+                                                onchange={(event) => updateBodySyntaxCondition(conditionIndex, { value: event.currentTarget.value })}
+                                            >
+                                                <option value="1">{language.promptV2.on}</option>
+                                                <option value="0">{language.promptV2.off}</option>
+                                            </select>
+                                        {:else if definition?.type === 'select' && definition.options.length > 0}
+                                            <select
+                                                class="field-control syntax-value"
+                                                value={condition.value}
+                                                aria-label={language.promptV2.conditionValue}
+                                                onchange={(event) => updateBodySyntaxCondition(conditionIndex, { value: event.currentTarget.value })}
+                                            >
+                                                {#each definition.options as option, optionIndex}
+                                                    <option value={String(optionIndex)}>{option}</option>
+                                                {/each}
+                                            </select>
+                                        {:else}
+                                            <input
+                                                class="field-control syntax-value"
+                                                value={condition.value}
+                                                aria-label={language.promptV2.conditionValue}
+                                                oninput={(event) => updateBodySyntaxCondition(conditionIndex, { value: event.currentTarget.value })}
+                                            />
+                                        {/if}
+                                        <ShButton
+                                            size="icon-sm"
+                                            variant="ghost"
+                                            disabled={bodySyntaxConditions.length <= 1}
+                                            onclick={() => removeBodySyntaxCondition(conditionIndex)}
+                                            title={language.remove}
+                                            aria-label={language.remove}
+                                        ><Trash2Icon size={15} /></ShButton>
+                                    </div>
+                                {/each}
+                            </div>
+                            <div class="syntax-actions">
+                                <ShButton size="sm" variant="ghost" onclick={addBodySyntaxCondition} disabled={definitions.length === 0}>
+                                    <PlusIcon size={14} />{language.promptV2.addCondition}
+                                </ShButton>
+                                <ShButton size="sm" onclick={insertBodyCondition} disabled={definitions.length === 0 || bodySyntaxConditions.length === 0}>
+                                    <BracesIcon size={14} />{bodySelection.start === bodySelection.end ? language.promptV2.insertAtCursor : language.promptV2.wrapSelection}
+                                </ShButton>
+                            </div>
+                        </div>
+                        <div class="prompt-body-visual" use:persistElementHeight={'prompt-v2-body'}>
+                            <CbsConditionView
+                                bind:this={visualBodyField}
+                                value={parsedText.body}
+                                onInput={applyText}
+                                variableLabels={visualVariableLabels}
+                                showVariableSidebar={false}
+                                onSelectionChange={updateBodySelection}
+                            />
+                        </div>
+                    {:else}
+                        <div
+                            class="prompt-body-editor"
+                            class:prompt-body-editor--active={previewState === true}
+                            class:prompt-body-editor--inactive={previewState === false}
+                        >
+                            {#if hasBodyPreview}
+                                <pre class="prompt-body-preview" bind:this={bodyPreviewElement} aria-hidden="true">{#each bodyPreviewSegments as segment}<span
+                                    class:prompt-body-preview-text--active={segment.state === 'active'}
+                                    class:prompt-body-preview-text--inactive={segment.state === 'inactive'}
+                                >{segment.text}</span>{/each}{'\n'}</pre>
+                            {/if}
+                            <textarea
+                                class="prompt-body-field"
+                                bind:this={bodyField}
+                                use:persistElementHeight={'prompt-v2-body'}
+                                class:prompt-body-field--preview={hasBodyPreview}
+                                class:prompt-body-field--active={previewState === true}
+                                class:prompt-body-field--inactive={previewState === false}
+                                value={parsedText.body}
+                                readonly={!parsedText.editable}
+                                spellcheck="false"
+                                onselect={() => updateBodySelection()}
+                                onscroll={syncBodyPreviewScroll}
+                                oninput={(event) => applyText(event.currentTarget.value)}
+                            ></textarea>
+                        </div>
+                    {/if}
                 </section>
             {/if}
 
@@ -637,6 +834,79 @@
         font-weight: 700;
     }
 
+    .editor-mode-tabs {
+        display: inline-flex;
+        padding: .15rem;
+        border: 1px solid var(--color-darkborderc);
+        border-radius: .45rem;
+        background: color-mix(in srgb, var(--color-bgcolor) 70%, transparent);
+    }
+
+    .editor-mode-tabs button {
+        min-height: 1.65rem;
+        padding: .2rem .55rem;
+        border: 0;
+        border-radius: .3rem;
+        color: var(--color-textcolor2);
+        background: transparent;
+        font-size: .7rem;
+        cursor: pointer;
+    }
+
+    .editor-mode-tabs button[aria-pressed='true'] {
+        color: var(--color-textcolor);
+        background: var(--color-selected);
+        box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-borderc) 55%, transparent);
+    }
+
+    .editor-mode-tabs button:focus-visible {
+        outline: 1px solid var(--color-borderc);
+        outline-offset: 1px;
+    }
+
+    .syntax-palette {
+        margin-bottom: .65rem;
+        border: 1px solid var(--color-darkborderc);
+        border-radius: .6rem;
+        padding: .65rem;
+        background: color-mix(in srgb, var(--color-darkbutton) 32%, transparent);
+    }
+
+    .syntax-palette-heading,
+    .syntax-actions {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: .5rem;
+    }
+
+    .syntax-palette-heading h4 { margin: 0; font-size: .75rem; font-weight: 650; }
+    .syntax-palette-heading p { margin: .15rem 0 0; color: var(--color-textcolor2); font-size: .68rem; }
+    .syntax-join { width: auto; min-width: 10.5rem; min-height: 2rem; padding-block: .25rem; font-size: .72rem; }
+    .syntax-condition-list { display: grid; gap: .35rem; margin-top: .55rem; }
+    .syntax-condition-row {
+        display: grid;
+        grid-template-columns: 1.6rem minmax(8rem, 1fr) 4.25rem minmax(5.5rem, 8rem) 2rem;
+        align-items: center;
+        gap: .35rem;
+    }
+    .syntax-condition-row .field-control { min-height: 2rem; padding: .25rem .45rem; font-size: .72rem; }
+    .syntax-operator, .syntax-value { width: 100%; }
+    .syntax-actions { justify-content: flex-end; margin-top: .55rem; border-top: 1px solid var(--color-darkborderc); padding-top: .55rem; }
+
+    .prompt-body-visual {
+        display: block;
+        width: 100%;
+        height: 16rem;
+        min-height: 16rem;
+        resize: vertical;
+        overflow: hidden;
+        border: 1px solid var(--color-darkborderc);
+        border-radius: .6rem;
+        background: color-mix(in srgb, var(--color-bgcolor) 65%, transparent);
+    }
+
     .prompt-body-field,
     .prompt-body-preview {
         scrollbar-gutter: stable;
@@ -730,5 +1000,9 @@
         .condition-row > :global(:nth-child(3)),
         .condition-row > :global(:nth-child(4)) { grid-column: 2 / 3; width: 100%; }
         .condition-row > :global(:last-child) { grid-column: 3; grid-row: 1; }
+        .syntax-condition-row { grid-template-columns: 1.6rem minmax(0, 1fr) 2rem; }
+        .syntax-condition-row > :global(:nth-child(3)),
+        .syntax-condition-row > :global(:nth-child(4)) { grid-column: 2 / 3; width: 100%; }
+        .syntax-condition-row > :global(:last-child) { grid-column: 3; grid-row: 1; }
     }
 </style>

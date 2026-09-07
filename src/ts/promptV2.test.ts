@@ -9,6 +9,9 @@ import {
     loadPromptV2PreviewState,
     parsePromptV2Text,
     parsePromptV2ToggleTree,
+    insertPromptV2BodyCondition,
+    loadPromptV2EditorMode,
+    savePromptV2EditorMode,
     savePromptV2PreviewState,
     type PromptV2Activation,
 } from './promptV2'
@@ -47,6 +50,64 @@ const activation = (join: 'and' | 'or'): PromptV2Activation => ({
 })
 
 describe('Prompt V2 compatibility compiler', () => {
+    test('wraps the current body selection with a canonical, lossless condition block', () => {
+        const result = insertPromptV2BodyCondition('Before selected after', 7, 15, activation('or'))
+        const opening = '{{#if {{or::{{equal::{{getglobalvar::toggle_OOC}}::0}}::{{notequal::{{getglobalvar::toggle_lang}}::2}}}}}}'
+
+        expect(result.body).toBe(`Before ${opening}\nselected\n{{/if}} after`)
+        expect(result.body.slice(result.selectionStart, result.selectionEnd)).toBe('selected')
+    })
+
+    test('inserts an empty condition block at the caret and leaves the caret in its body', () => {
+        const rule: PromptV2Activation = {
+            join: 'and',
+            conditions: [{ key: 'toggle_OOC', operator: 'is', value: '1' }],
+        }
+        const result = insertPromptV2BodyCondition('BeforeAfter', 6, 6, rule)
+
+        expect(result.body).toBe('Before{{#if {{equal::{{getglobalvar::toggle_OOC}}::1}}}}\n\n{{/if}}After')
+        expect(result.selectionStart).toBe(result.selectionEnd)
+        expect(result.body.slice(result.selectionStart - 1, result.selectionStart + 1)).toBe('\n\n')
+    })
+
+    test('inserts numeric comparisons used by legacy toggle conditions', () => {
+        const result = insertPromptV2BodyCondition('Body', 0, 4, {
+            join: 'and',
+            conditions: [{ key: 'toggle_sinister', operator: 'greaterequal', value: '1' }],
+        })
+
+        expect(result.body).toContain('{{greater_equal::{{getglobalvar::toggle_sinister}}::1}}')
+    })
+
+    test('keeps a condition around the complete body inside the body instead of treating it as block activation', () => {
+        const result = insertPromptV2BodyCondition('Body', 0, 4, {
+            join: 'and',
+            conditions: [{ key: 'toggle_enabled', operator: 'is', value: '1' }],
+        })
+
+        expect(parsePromptV2Text(result.body)).toEqual({
+            body: result.body,
+            activation: null,
+            format: 'none',
+            editable: true,
+        })
+    })
+
+    test('remembers the Prompt V2 source or visual editing mode', () => {
+        const values = new Map<string, string>()
+        const storage = {
+            getItem: (key: string) => values.get(key) ?? null,
+            setItem: (key: string, value: string) => values.set(key, value),
+            removeItem: (key: string) => values.delete(key),
+        }
+
+        expect(loadPromptV2EditorMode(storage)).toBe('source')
+        savePromptV2EditorMode('visual', storage)
+        expect(loadPromptV2EditorMode(storage)).toBe('visual')
+        values.set('risubard:prompt-v2-editor-mode:v1', 'broken')
+        expect(loadPromptV2EditorMode(storage)).toBe('source')
+    })
+
     test('round-trips AND conditions without adding preset schema fields', () => {
         const source = compilePromptV2Text('Readable prompt body', activation('and'))
 
