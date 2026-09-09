@@ -342,7 +342,7 @@ function recordJobRecoveryLog(
     result: { ok: true, text: string, usage?: AdapterUsage } | { ok: false, error: string },
 ): void {
     recordRequestLog({
-        pageFold: job.pageFold ? { ...job.pageFold, recovered: true, recoveredResponseTokens: result.ok === true ? result.usage?.completionTokens : undefined } : undefined,
+        pageFold: job.pageFold ? { ...job.pageFold, recovered: true } : undefined,
         timestamp: Date.now(),
         category: 'llm',
         // Recovered jobs are always main chat generations — aux jobs are
@@ -371,11 +371,7 @@ function recordJobRecoveryLog(
         // Harvested from the journal by the same adapter parsers a live run
         // uses, so a recovered generation counts in the usage statistics.
         inputTokens: result.ok === true ? result.usage?.promptTokens : undefined,
-        outputTokens: result.ok === true
-            ? job.pageFold && job.adapterKind === 'google-gemini' && (result.usage?.completionTokens !== undefined || result.usage?.reasoningTokens !== undefined)
-                ? (result.usage?.completionTokens ?? 0) + (result.usage?.reasoningTokens ?? 0)
-                : result.usage?.completionTokens
-            : undefined,
+        outputTokens: result.ok === true ? result.usage?.completionTokens : undefined,
         cachedTokens: result.ok === true ? result.usage?.cachedTokens : undefined,
         reasoningTokens: result.ok === true ? result.usage?.reasoningTokens : undefined,
     })

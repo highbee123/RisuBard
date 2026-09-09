@@ -178,12 +178,12 @@ export function finalizeLogs(entries, saveBodies) {
       if (frame.usageMetadata) { googleUsage = true; googleResponseTokens = finite(u.candidatesTokenCount) ?? googleResponseTokens; }
       if (!u) continue;
       entry.inputTokens = finite(u.promptTokenCount ?? u.prompt_tokens) ?? entry.inputTokens;
-      entry.outputTokens = frame.usageMetadata ? (finite(u.candidatesTokenCount) !== null || finite(u.thoughtsTokenCount) !== null ? (finite(u.candidatesTokenCount) ?? 0) + (finite(u.thoughtsTokenCount) ?? 0) : entry.outputTokens) : finite(u.completion_tokens) ?? entry.outputTokens;
+      entry.outputTokens = (frame.usageMetadata ? finite(u.candidatesTokenCount) : finite(u.completion_tokens)) ?? entry.outputTokens;
       entry.reasoningTokens = finite(u.thoughtsTokenCount ?? u.completion_tokens_details?.reasoning_tokens) ?? entry.reasoningTokens;
       pf.actualCost = finite(u.cost) ?? pf.actualCost;
       pf.servedServiceTier = frame.service_tier ?? pf.servedServiceTier;
     }
-    pf.responseTokens = googleUsage ? googleResponseTokens : pf.kind === 'google' && pf.recovered ? finite(pf.recoveredResponseTokens) : finite(entry.outputTokens) === null ? null : Math.max(0, entry.outputTokens - (entry.reasoningTokens ?? 0));
+    pf.responseTokens = googleUsage ? googleResponseTokens : pf.kind === 'google' ? finite(entry.outputTokens) : finite(entry.outputTokens) === null ? null : Math.max(0, entry.outputTokens - (entry.reasoningTokens ?? 0));
     pf.inputSource = finite(entry.inputTokens) === null ? 'unavailable' : 'provider';
     pf.savedTokens = entry.success && pf.comparable && finite(entry.inputTokens) !== null ? pf.baselineTokens - entry.inputTokens : null;
     pf.savedUsd = pf.savedTokens !== null && finite(pf.inputPrice) !== null ? pf.savedTokens * pf.inputPrice / 1e6 : null;

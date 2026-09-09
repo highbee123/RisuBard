@@ -262,13 +262,15 @@ describe('PageFold preset eligibility and wire behavior', () => {
 })
 describe('PageFold usage and response correctness', () => {
     it('keeps negative savings and valid zero usage; drops bodies when logging is off', () => {
-        const rows: any = [{ success: true, pageFold: { comparable: true, baselineTokens: 10, inputPrice: 1, pdfContent: 'secret' }, responseBody: JSON.stringify({ usageMetadata: { promptTokenCount: 20, candidatesTokenCount: 3, thoughtsTokenCount: 2 } }) }]
+        const rows: any = [{ success: true, pageFold: { kind: 'google', comparable: true, baselineTokens: 10, inputPrice: 1, pdfContent: 'secret' }, responseBody: JSON.stringify({ usageMetadata: { promptTokenCount: 20, candidatesTokenCount: 3, thoughtsTokenCount: 2 } }) }]
         finalizeLogs(rows, false)
         expect(rows[0].pageFold.savedTokens).toBe(-10)
-        expect(rows[0].outputTokens).toBe(5)
+        expect(rows[0].outputTokens).toBe(3)
+        expect(rows[0].reasoningTokens).toBe(2)
         expect(rows[0].pageFold.responseTokens).toBe(3)
         expect(rows[0].responseBody).toBeUndefined(); expect(rows[0].pageFold.pdfContent).toBeUndefined()
         rows[0].inputTokens = 0; finalizeLogs(rows, false); expect(rows[0].pageFold.savedTokens).toBe(10)
+        expect(rows[0].pageFold.responseTokens).toBe(3)
     })
     it('does not invent usage or price when they are unavailable', () => {
         const rows: any = [{ success: true, pageFold: { comparable: true, baselineTokens: 100, inputPrice: null } }]

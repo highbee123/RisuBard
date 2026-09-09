@@ -819,6 +819,18 @@ describe('attachRunningJob', () => {
 
 
 describe('PageFold recovery', () => {
+    test('records Gemini PDF response and reasoning tokens separately after recovery', async () => {
+        const { recovery } = await loadModules()
+        const logs = await import('src/ts/requestLog')
+        const record = vi.spyOn(logs, 'recordRequestLog').mockImplementation(() => {})
+        try {
+            mocks.db.characters = [makeChar(makeChat())]
+            setupServer({ journals: { 'job-1': JSON.stringify({ candidates: [{ content: { parts: [{ text: 'Hello' }] } }], usageMetadata: { promptTokenCount: 20, candidatesTokenCount: 3, thoughtsTokenCount: 2 } }) } })
+            await recovery.recoverTerminalJob(makeJob({ adapterKind: 'google-gemini', streaming: false, pageFold: { version: 1, kind: 'google' } }) as any)
+            expect(record).toHaveBeenCalledWith(expect.objectContaining({ outputTokens: 3, reasoningTokens: 2, inputTokens: 20 }))
+        } finally { record.mockRestore() }
+    })
+
     test('replays visible newline markers only when PDF was enabled', async () => {
         const { recovery } = await loadModules()
         const raw = JSON.stringify({ choices: [{ message: { content: 'one\\ntwo' } }] })
