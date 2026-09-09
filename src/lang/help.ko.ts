@@ -270,6 +270,7 @@ export const helpKo = {
         "risuBardInquiryEventTokenBudget": "과거·원인·세부·연대기 질문에서 캐릭터 전환점 맵과 아크 플롯을 따라 상세 사건 문서를 가져올 때 쓰는 별도 토큰 예산입니다. 현재 상태 질문만으로는 사용하지 않으며 전체 조회는 절대 상한을 넘지 않습니다.",
         "risuBardInquirySourceTokenBudget": "선택된 위키 문서나 과거 원문 하나가 사용할 수 있는 실제 토큰 수의 상한입니다. 2,000자처럼 문자 수로 자르지 않고 모델 토크나이저로 제한합니다.",
         "risuBardInquiryMaximumTokenBudget": "상세 조회와 필수 문서를 포함해 한 번의 위키 조회가 절대로 넘을 수 없는 토큰 수입니다. 목표보다 작게 설정하면 목표도 이 값으로 제한됩니다.",
+        "risuBardInquiryTimeoutMs": "각 위키 조회 라운드의 제한 시간입니다. 기본값과 최댓값은 10,000ms이며 최솟값은 1ms입니다.",
         "risuBardHistoricalSourceMatchLimit": "어휘 검색 후보와 선택된 사건의 출처 ID를 합쳐 최종 컨텍스트에 넣을 수 있는 과거 원문의 최대 개수입니다. 실제 선택 수는 관련도와 토큰 예산에 따라 더 적을 수 있습니다. 기본값은 8, 안전 상한은 32이며 0은 과거 원문 회수를 끕니다.",
         "risuBardAdditionalSearchLimit": "첫 분석에서 정본 후보가 부족할 때 위키 문서를 추가로 탐색할 최대 횟수입니다.",
         "risuBardCanonicalTargetLimit": "한 번의 자동 분석에서 생성하거나 갱신할 정본 문서의 최대 개수입니다.",

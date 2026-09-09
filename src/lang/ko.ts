@@ -3507,6 +3507,7 @@ export const languageKorean = {
   risuBardInquiryEventTokenBudget: "사건 상세 조회 토큰",
   risuBardInquirySourceTokenBudget: "자료별 검색 토큰 상한",
   risuBardInquiryMaximumTokenBudget: "위키 조회 토큰 절대 상한",
+  risuBardInquiryTimeoutMs: "위키 조회 제한 시간(ms)",
   risuBardHistoricalSourceMatchLimit: "과거 원문 최대 수",
   risuBardAdditionalSearchLimit: "후보 부족 시 추가 검색 한도",
   risuBardCanonicalTargetLimit: "분석 1회당 자동 정본 대상 한도",
