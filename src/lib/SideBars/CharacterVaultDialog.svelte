@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { ensureCharacterReady, nativeRuntime } from 'src/ts/storage/nativeRuntime';
     import {
         ArchiveIcon,
         CheckIcon,
@@ -273,6 +274,7 @@
     }
 
     async function renameCharacter(id: string) {
+        await ensureCharacterReady(id)
         const character = DBState.db.characters.find((entry) => entry.chaId === id)
         if (!character) return
         const oldName = character.name
@@ -328,6 +330,7 @@
         if (!await alertConfirm(`선택한 ${count}명의 캐릭터를 휴지통으로 이동할까요?`)) {
             return
         }
+        if (nativeRuntime) for (const id of selectedIds) await ensureCharacterReady(id)
         const trashed = trashCharacterVaultCharacters(DBState.db, selectedIds)
         if (trashed === 0) return
         selectedIds = []
@@ -340,7 +343,7 @@
         if (selectedIds.length === 0 || cloning) return
         cloning = true
         notice = ''
-        const previousCharacters = [...DBState.db.characters]
+        let previousCharacters = [...DBState.db.characters]
         const previousOrder = DBState.db.characterOrder
         const staged: {
             characterId: string
@@ -349,6 +352,7 @@
         }[] = []
         let applied = false
         try {
+            for (const id of selectedIds) await ensureCharacterReady(id)
             if (withChats) {
                 for (const source of DBState.db.characters) {
                     if (!selectedIds.includes(source.chaId)) continue
@@ -365,6 +369,8 @@
                     }
                 }
             }
+            // Rollback must retain hydrated originals, never restore their old summaries.
+            previousCharacters = [...DBState.db.characters]
             const plans = createCharacterVaultClones(DBState.db, selectedIds, {
                 withChats,
                 createId: v4,

@@ -34,11 +34,85 @@ let mounted: ReturnType<typeof mount> | undefined
 afterEach(async () => {
     if (mounted) await unmount(mounted)
     mounted = undefined
+    vi.useRealTimers()
     document.body.replaceChildren()
     localStorage.clear()
 })
 
 describe('Prompt V2 block visual editor', () => {
+    it('replaces the currently selected search match instead of the first body match', async () => {
+        const item: PromptItem = {
+            type: 'plain', type2: 'normal', role: 'system', name: 'Block', text: 'Alpha alpha ALPHA',
+        }
+        const onReplace = vi.fn()
+        mounted = mount(PromptV2BlockEditor, {
+            target: document.body,
+            props: {
+                item,
+                definitions: [],
+                previewValues: {},
+                onReplace,
+                onOpenToggleSetup: vi.fn(),
+            },
+        })
+        await tick()
+        const editor = mounted as unknown as {
+            findInBody(search: string): Promise<void>
+            replaceCurrentBodyMatch(search: string, replacement: string): boolean
+        }
+
+        await editor.findInBody('alpha')
+        await editor.findInBody('alpha')
+        expect(editor.replaceCurrentBodyMatch('alpha', 'Beta')).toBe(true)
+        expect(onReplace.mock.lastCall?.[0].text).toBe('Alpha Beta ALPHA')
+    })
+
+    it('debounces visual body commits and flushes the latest text on blur', async () => {
+        vi.useFakeTimers()
+        const item: PromptItem = {
+            type: 'plain', type2: 'normal', role: 'system', name: 'Block', text: 'Body',
+        }
+        const onReplace = vi.fn()
+        mounted = mount(PromptV2BlockEditor, {
+            target: document.body,
+            props: {
+                item,
+                definitions: [],
+                previewValues: {},
+                onReplace,
+                onOpenToggleSetup: vi.fn(),
+            },
+        })
+        await tick()
+
+        document.querySelectorAll<HTMLButtonElement>('.editor-mode-tabs button')[1].click()
+        await tick()
+        const body = document.querySelector<HTMLTextAreaElement>('[data-cbs-body]')!
+        body.value = 'Body updated'
+        body.dispatchEvent(new Event('input', { bubbles: true }))
+        await tick()
+
+        expect(onReplace).not.toHaveBeenCalled()
+        await vi.advanceTimersByTimeAsync(400)
+        body.value = 'Body updated twice'
+        body.dispatchEvent(new Event('input', { bubbles: true }))
+        await tick()
+        await vi.advanceTimersByTimeAsync(749)
+        expect(onReplace).not.toHaveBeenCalled()
+        await vi.advanceTimersByTimeAsync(1)
+        expect(onReplace).toHaveBeenCalledTimes(1)
+        expect(onReplace.mock.lastCall?.[0].text).toBe('Body updated twice')
+
+        body.value = 'Body updated again'
+        body.dispatchEvent(new Event('input', { bubbles: true }))
+        await tick()
+        expect(onReplace).toHaveBeenCalledTimes(1)
+        body.dispatchEvent(new FocusEvent('blur', { bubbles: true }))
+        await tick()
+        expect(onReplace).toHaveBeenCalledTimes(2)
+        expect(onReplace.mock.lastCall?.[0].text).toBe('Body updated again')
+    })
+
     it('edits the block name inline and keeps editor modes at the right edge of the toolbar', async () => {
         const item: PromptItem = {
             type: 'plain', type2: 'normal', role: 'system', name: 'Block', text: 'Body',
@@ -98,6 +172,39 @@ describe('Prompt V2 block visual editor', () => {
         const conditional = Array.from(document.querySelectorAll<HTMLTextAreaElement>('[data-cbs-body]'))
             .find(field => field.value.includes('Conditional'))!
         expect(conditional.dataset.cbsPreviewState).toBe('inactive')
+    })
+
+    it('shows the native source text while the textarea is focused', async () => {
+        const item: PromptItem = {
+            type: 'plain',
+            type2: 'normal',
+            role: 'system',
+            name: 'Conditional block',
+            text: 'Before {{#if {{equal::{{getglobalvar::toggle_enabled}}::1}}}}inside{{/if}} after',
+        }
+        mounted = mount(PromptV2BlockEditor, {
+            target: document.body,
+            props: {
+                item,
+                definitions: [{
+                    key: 'toggle_enabled', rawKey: 'enabled', label: '활성화', type: 'switch', options: [],
+                }],
+                previewValues: { toggle_enabled: '1' },
+                onReplace: vi.fn(),
+                onOpenToggleSetup: vi.fn(),
+            },
+        })
+        await tick()
+
+        document.querySelectorAll<HTMLButtonElement>('.editor-mode-tabs button')[0].click()
+        await tick()
+        const body = document.querySelector<HTMLTextAreaElement>('.prompt-body-field')!
+        expect(body.classList.contains('prompt-body-field--preview')).toBe(true)
+
+        body.focus()
+        await tick()
+
+        expect(body.classList.contains('prompt-body-field--preview')).toBe(false)
     })
 
     it('wraps the selected visual text with a condition and remembers the mode', async () => {

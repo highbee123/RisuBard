@@ -291,7 +291,7 @@
             {@render sep()}
         {/if}
         {@render toggles(groupedToggles, true)}
-        {#if chara && DBState.db.hypaV3}
+        {#if chara && DBState.db.showMenuHypaMemoryModal && DBState.db.hypaV3}
             <div class="w-full flex mt-2 items-center justify-between gap-2 min-h-10 rounded-md px-1">
                 <span class="flex items-center gap-1">
                     <span>{language.ToggleHypaMemory}</span>
@@ -320,7 +320,7 @@
         {/if}
     {/if}
     {@render toggles(groupedToggles)}
-    {#if DBState.db.hypaV3}
+    {#if DBState.db.showMenuHypaMemoryModal && DBState.db.hypaV3}
         <div class="w-full flex mt-2 items-center justify-between gap-2 min-h-10 rounded-md px-1">
             <span class="flex items-center gap-1">
                 <span>{language.ToggleHypaMemory}</span>

@@ -38,6 +38,32 @@ export interface LoreBuilderSelections {
     moduleLorebook: boolean
 }
 
+const LORE_BUILDER_SELECTIONS_STORAGE_KEY = 'risubard:lore-builder-selections:v1'
+
+function defaultStorage(): Storage | null {
+    try { return typeof localStorage === 'undefined' ? null : localStorage }
+    catch { return null }
+}
+
+export function loadLoreBuilderSelections(storage = defaultStorage()): LoreBuilderSelections | null {
+    if (!storage) return null
+    try {
+        const value = JSON.parse(storage.getItem(LORE_BUILDER_SELECTIONS_STORAGE_KEY) ?? 'null')
+        if (!value || typeof value !== 'object') return null
+        const keys = ['systemPrompt', 'characterDescription', 'characterLorebook', 'moduleLorebook'] as const
+        return keys.every((key) => typeof value[key] === 'boolean')
+            ? Object.fromEntries(keys.map((key) => [key, value[key]])) as unknown as LoreBuilderSelections
+            : null
+    }
+    catch { return null }
+}
+
+export function saveLoreBuilderSelections(selections: LoreBuilderSelections, storage = defaultStorage()): void {
+    if (!storage) return
+    try { storage.setItem(LORE_BUILDER_SELECTIONS_STORAGE_KEY, JSON.stringify(selections)) }
+    catch {}
+}
+
 export interface LoreBuilderSourceSnapshot {
     systemPrompt: string
     characterDescription: string

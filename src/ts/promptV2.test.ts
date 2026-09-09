@@ -6,6 +6,7 @@ import {
     createPromptV2BodyPreviewSegments,
     createPromptV2PreviewValues,
     evaluatePromptV2Activation,
+    getPromptV2TextSource,
     loadPromptV2PreviewState,
     parsePromptV2Text,
     parsePromptV2ToggleTree,
@@ -13,6 +14,8 @@ import {
     loadPromptV2EditorMode,
     savePromptV2EditorMode,
     savePromptV2PreviewState,
+    countPromptV2BodyMatches,
+    replacePromptV2BodyMatches,
     type PromptV2Activation,
 } from './promptV2'
 import { risuChatParser } from './parser/parser.svelte'
@@ -50,6 +53,32 @@ const activation = (join: 'and' | 'or'): PromptV2Activation => ({
 })
 
 describe('Prompt V2 compatibility compiler', () => {
+    test('replaces one selected body match or every body match without changing activation syntax', () => {
+        const guarded = {
+            type: 'plain', type2: 'normal', role: 'system', name: 'Guarded',
+            text: compilePromptV2Text('Alpha alpha ALPHA', activation('and')),
+        } as const
+        const items = [
+            guarded,
+            { type: 'authornote', name: 'Note', innerFormat: 'alpha / untouched' },
+            { type: 'chat', name: 'History' },
+        ] as Parameters<typeof replacePromptV2BodyMatches>[0]
+
+        expect(countPromptV2BodyMatches(guarded, 'alpha')).toBe(3)
+
+        const one = replacePromptV2BodyMatches(items, 'alpha', '$1 replacement', 0)
+        expect(one.replaced).toBe(1)
+        expect(parsePromptV2Text(getPromptV2TextSource(one.items[0])?.source ?? '').body).toBe('$1 replacement alpha ALPHA')
+        expect(parsePromptV2Text(getPromptV2TextSource(one.items[0])?.source ?? '').activation).toEqual(activation('and'))
+        expect(parsePromptV2Text(getPromptV2TextSource(items[0])?.source ?? '').body).toBe('Alpha alpha ALPHA')
+
+        const all = replacePromptV2BodyMatches(items, 'alpha', 'Beta')
+        expect(all.replaced).toBe(4)
+        expect(parsePromptV2Text(getPromptV2TextSource(all.items[0])?.source ?? '').body).toBe('Beta Beta Beta')
+        expect(getPromptV2TextSource(all.items[1])?.source).toBe('Beta / untouched')
+        expect(all.items[2]).toBe(items[2])
+    })
+
     test('wraps the current body selection with a canonical, lossless condition block', () => {
         const result = insertPromptV2BodyCondition('Before selected after', 7, 15, activation('or'))
         const opening = '{{#if {{or::{{equal::{{getglobalvar::toggle_OOC}}::0}}::{{notequal::{{getglobalvar::toggle_lang}}::2}}}}}}'

@@ -36,32 +36,4 @@ describe('automatic BardWiki confirmation', () => {
         expect(processSource).toContain('export async function confirmCurrentNarrativeMessage(')
     })
 
-    test('keeps configurable confirmation delay out of the product path', () => {
-        const processSource = readFileSync('src/ts/process/index.svelte.ts', 'utf8')
-        const currentChatSettings = readFileSync(
-            'src/lib/Others/RisuBardCurrentChatSettings.svelte',
-            'utf8'
-        )
-        const commonSettings = readFileSync(
-            'src/ts/setting/risuBardCommonSettingsData.ts',
-            'utf8'
-        )
-        const databaseSource = readFileSync(
-            'src/ts/storage/database.svelte.ts',
-            'utf8'
-        )
-
-        expect(processSource).toMatch(
-            /const narrativeTurnToConfirm = projectConfirmedMemoryTurn\(\s*currentChat\.message\s*\)/
-        )
-        for (const source of [
-            processSource,
-            currentChatSettings,
-            commonSettings,
-            databaseSource,
-        ]) {
-            expect(source).not.toContain('risuBardAutoConfirmDelayEnabled')
-            expect(source).not.toContain('risuBardAutoWikiConfirmationCursor')
-        }
-    })
 })

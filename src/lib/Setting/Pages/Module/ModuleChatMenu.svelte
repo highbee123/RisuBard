@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { ensureModuleReady, nativeRuntime } from 'src/ts/storage/nativeRuntime';
     import { CircleCheckIcon, GlobeIcon, MessageSquareIcon, Waypoints } from '@lucide/svelte'
     import { language } from 'src/lang'
     import CollectionOrganizerList from 'src/lib/UI/CollectionOrganizerList.svelte'
@@ -17,22 +18,23 @@
     let open = $state(true)
     const copy = $derived(language.chatModuleActivation)
     const character = $derived(DBState.db.characters[$selectedCharID])
-    const chat = $derived(character?.chats?.[character.chatPage])
     const persona = $derived((character ? checkPersonaBinded() : null)
         ?? DBState.db.personas?.[DBState.db.selectedPersona ?? 0])
     const items = $derived(DBState.db.modules.map((module) => ({
         id: module.id, title: module.name, detail: module.description,
     })))
 
-    function toggleModule(moduleId: string, scope: 'global' | 'chat') {
-        if (alertMode || (scope === 'chat' && !chat)) return
+    async function toggleModule(moduleId: string, scope: 'global' | 'character') {
+        if (alertMode || (scope === 'character' && !character)) return
+        const enabled = scope === 'global' ? DBState.db.enabledModules?.includes(moduleId) : character?.modules?.includes(moduleId)
+        if (!enabled && nativeRuntime && !nativeRuntime.moduleReady(moduleId)) await ensureModuleReady(moduleId)
         if (scope === 'global') {
             const ids = DBState.db.enabledModules ?? []
             DBState.db.enabledModules = ids.includes(moduleId)
                 ? ids.filter((id) => id !== moduleId) : [...ids, moduleId]
         } else {
-            const ids = chat.modules ?? []
-            chat.modules = ids.includes(moduleId)
+            const ids = character.modules ?? []
+            character.modules = ids.includes(moduleId)
                 ? ids.filter((id) => id !== moduleId) : [...ids, moduleId]
         }
         $ReloadGUIPointer += 1
@@ -56,10 +58,9 @@
 
     <CollectionOrganizerList managerLayout kind="modules" {items} collectionLabel={language.modules}>
         {#snippet itemContent(moduleId)}
-            {@const module = DBState.db.modules.find((item) => item.id === moduleId)}
+                {@const module = DBState.db.modules.find((item) => item.id === moduleId)}
             {#if module}
                 {@const globalEnabled = DBState.db.enabledModules?.includes(moduleId) ?? false}
-                {@const chatEnabled = chat?.modules?.includes(moduleId) ?? false}
                 {@const characterEnabled = character?.modules?.includes(moduleId) ?? false}
                 {@const personaEnabled = (persona?.id && DBState.db.personaEnabledModules?.[persona.id]?.includes(moduleId)) || persona?.embeddedModule?.id === moduleId}
                 <div class="chat-module-row">
@@ -69,8 +70,8 @@
                             <strong>{module.name}</strong>
                         </div>
                         {#if module.description}<p>{module.description}</p>{/if}
-                        {#if !alertMode && (characterEnabled || personaEnabled)}
-                            <p class="chat-module-inherited">{characterEnabled ? copy.characterEnabled : copy.personaEnabled}</p>
+                        {#if !alertMode && personaEnabled}
+                            <p class="chat-module-inherited">{copy.personaEnabled}</p>
                         {/if}
                     </div>
                     {#if alertMode}
@@ -78,19 +79,17 @@
                     {:else}
                         <div class="chat-module-scopes">
                             <div class="chat-module-scope">
-                                <span>{copy.global}</span>
                                 <button type="button" class="chat-module-toggle" class:active={globalEnabled}
                                     aria-label={module.name + ': ' + copy.global} aria-pressed={globalEnabled}
                                     title={copy.globalHint} onclick={() => toggleModule(moduleId, 'global')}>
-                                    <GlobeIcon size={24}/>
+                                    <GlobeIcon size={19.2}/>
                                 </button>
                             </div>
                             <div class="chat-module-scope">
-                                <span>{copy.chat}</span>
-                                <button type="button" class="chat-module-toggle" class:active={chatEnabled}
-                                    aria-label={module.name + ': ' + copy.chat} aria-pressed={chatEnabled} disabled={!chat}
-                                    title={chat ? copy.chatHint : copy.noChat} onclick={() => toggleModule(moduleId, 'chat')}>
-                                    <MessageSquareIcon size={24}/>
+                                <button type="button" class="chat-module-toggle" class:active={characterEnabled}
+                                    aria-label={module.name + ': ' + copy.chat} aria-pressed={characterEnabled} disabled={!character}
+                                    title={character ? copy.chatHint : copy.noChat} onclick={() => toggleModule(moduleId, 'character')}>
+                                    <MessageSquareIcon size={19.2}/>
                                 </button>
                             </div>
                         </div>
@@ -107,9 +106,9 @@
     .chat-module-name { display: flex; align-items: center; gap: .4rem; }
     .chat-module-copy p { margin: .3rem 0 0; font-size: .85rem; color: var(--color-textcolor2); }
     .chat-module-copy .chat-module-inherited { color: var(--color-info); }
-    .chat-module-scopes { display: flex; flex: 0 0 auto; gap: .65rem; margin-left: auto; }
-    .chat-module-scope { display: flex; flex-direction: column; align-items: center; gap: .35rem; font-size: .8rem; font-weight: 600; }
-    .chat-module-toggle { display: flex; align-items: center; justify-content: center; width: 3.5rem; height: 3.5rem; flex: 0 0 auto; padding: .4rem; border: 1px solid var(--color-darkborderc); border-radius: .65rem; color: var(--color-textcolor2); background: var(--color-darkbg); cursor: pointer; }
+    .chat-module-scopes { display: flex; flex: 0 0 auto; gap: .5rem; margin-left: auto; }
+    .chat-module-scope { display: flex; align-items: center; }
+    .chat-module-toggle { display: flex; align-items: center; justify-content: center; width: 1.5rem; height: 1.5rem; flex: 0 0 auto; padding: 0; border: 1px solid var(--color-darkborderc); border-radius: .4rem; color: var(--color-textcolor2); background: var(--color-darkbg); cursor: pointer; }
     .chat-module-toggle.active { color: var(--color-accenttext); background: var(--color-primary); border-color: var(--color-primary); }
     .chat-module-toggle:hover { border-color: var(--color-info); }
     .chat-module-toggle:focus-visible { outline: 2px solid var(--color-info); outline-offset: 2px; }

@@ -993,6 +993,26 @@ describe('LoreBookWorkspace', () => {
         expect(list.textContent).not.toContain('Weather')
     })
 
+    it('offers an all-fields search target that finds lore body content', async () => {
+        await render([
+            entry('body-hit', { comment: 'Alchemy', key: 'atelier', content: 'A forbidden library beneath the academy.' }),
+            entry('miss', { comment: 'Weather', key: 'rain', content: 'Clouds gather at dusk.' }),
+        ])
+
+        const target = document.body.querySelector<HTMLSelectElement>('[data-lorebook-search-target]')!
+        expect([...target.options].map((option) => option.value)).toContain('all')
+        target.value = 'all'
+        target.dispatchEvent(new Event('change', { bubbles: true }))
+        const search = document.body.querySelector<HTMLInputElement>('[data-lorebook-search]')!
+        search.value = 'forbidden library'
+        search.dispatchEvent(new Event('input', { bubbles: true }))
+        await tick()
+
+        const list = document.body.querySelector('[data-lorebook-list]')!
+        expect(list.textContent).toContain('Alchemy')
+        expect(list.textContent).not.toContain('Weather')
+    })
+
     it('keeps every explicit move action when drag is disabled', async () => {
         await render([
             entry('folder', { mode: 'folder', key: 'places', comment: 'Places' }),

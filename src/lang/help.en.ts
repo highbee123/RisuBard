@@ -442,6 +442,10 @@ export const helpEn = {
             "Input and output token limit for each memory analysis, reboot, and canonical writing request. Long input is fitted before sending, and the same value is applied to model output. The default is 8,192. There is no fixed app maximum; choose a value within your model's context and output limits.",
         risuBardInquiryTargetTokenBudget:
             "Target number of tokens for related documents in an ordinary wiki inquiry. It is not filled when fewer documents are relevant.",
+        risuBardBardChanEnabled:
+            "When candidate scores are close, the selected model reranks one compact set of candidate cards. It is off by default; if the model call fails, the original deterministic result is used.",
+        risuBardBardChanModelMode:
+            "Selects the model used for Bard-chan's reranking request. The auxiliary model saves cost, while the main model can improve judgment between ambiguous candidates.",
         risuBardInquiryEventTokenBudget:
             "Separate budget for detailed event documents reached through character turning-point maps and the Story Arc Plot during historical, causal, detail, and chronology queries. Current-state queries alone do not activate it, and the whole inquiry stays below the absolute limit.",
         risuBardInquirySourceTokenBudget:
@@ -472,6 +476,8 @@ export const helpEn = {
             "Maximum characters in the complete reserved plot Markdown. Higher values preserve more threads but can enlarge canonical-writer input and later search candidates.",
         risuBardResponseExcludeUsers:
             "Exclude earlier user messages from response context. The current user request is always retained.",
+        risuBardAnalysisExcludeUsers:
+            "Exclude user messages from the confirmed turn and recent raw context used for BardWiki analysis, leaving assistant responses only.",
         customBackground: "A custom image used as the chat background.",
         playMessageOnTranslateEnd:
             "Play a separate notification sound when translation finishes. Useful when automatic translation is enabled and you want an audible completion cue.",

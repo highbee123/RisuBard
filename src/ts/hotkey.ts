@@ -1,4 +1,5 @@
 import { get } from "svelte/store"
+import { changeChar } from './characters'
 import { alertClear, alertMd, alertSelect, alertWait, doingAlert } from "./alert"
 import { getDatabase  } from "./storage/database.svelte"
 import { alertStore, DBState, MobileGUIStack, MobileSideBar, openPersonaList, personaSelectCallback, openPresetList, openModelPresetList, openHypaV3PresetList, openThemePresetList, OpenRealmStore, PlaygroundStore, QuickSettings, SafeModeStore, selectedCharID, settingsOpen } from "./stores.svelte"
@@ -106,7 +107,7 @@ export function initHotkey(){
                     if(currentIndex <= 0){
                         return
                     }
-                    selectedCharID.set(sorted[currentIndex - 1].i)
+                    await changeChar(sorted[currentIndex - 1].i)
                     PlaygroundStore.set(0)
                     OpenRealmStore.set(false)
                     break
@@ -121,7 +122,7 @@ export function initHotkey(){
                     }
                     // currentIndex === -1 (nothing selected) intentionally falls through
                     // to sorted[0], matching the previous behaviour.
-                    selectedCharID.set(sorted[currentIndex + 1].i)
+                    await changeChar(sorted[currentIndex + 1].i)
                     PlaygroundStore.set(0)
                     OpenRealmStore.set(false)
                     break

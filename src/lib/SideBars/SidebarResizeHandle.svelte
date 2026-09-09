@@ -42,7 +42,12 @@
     title="드래그 또는 방향키로 조절 · 두 번 클릭하거나 Home 키로 초기화"
     class="sidebar-resize-handle" class:is-width={axis === 'width'} class:is-height={axis === 'height'}
     data-sidebar-resize={axis}
-    use:resizeHandle={{ start, reset: () => { delete DBState.db[sizeField] }, end: () => { void requestImmediateSave() } }}
+    use:resizeHandle={{
+        start,
+        reset: () => { delete DBState.db[sizeField] },
+        end: () => { void requestImmediateSave() },
+        cancel: () => { void requestImmediateSave() },
+    }}
 ></button>
 
 <style>

@@ -2,6 +2,18 @@ import { describe, expect, it } from 'vitest'
 import { risuBardCommonSettingsItems } from './risuBardCommonSettingsData'
 
 describe('RisuBard common Arca settings', () => {
+    it('exposes an independent Bard-chan model selector', () => {
+        const item = risuBardCommonSettingsItems.find((candidate) =>
+            candidate.id === 'risubard.chat.bardChanModel')
+
+        expect(item).toMatchObject({
+            type: 'select',
+            bindKey: 'risuBardBardChanModelMode',
+        })
+        expect(item?.options?.selectOptions?.map((option) => option.value))
+            .toEqual(['memory', 'model'])
+    })
+
     it('lets number inputs keep intermediate draft values while typing', () => {
         const numericSettingIds = [
             'risubard.common.arcaChatImageWidth',

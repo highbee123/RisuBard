@@ -8,6 +8,8 @@
     import PlaygroundSyntax from "./PlaygroundSyntax.svelte";
     import { findCharacterIndexbyId } from "src/ts/util";
     import { characterFormatUpdate, createBlankChar } from "src/ts/characters";
+    import { ensureCharacterReady } from 'src/ts/storage/nativeRuntime';
+    import { ensureChatHydrated } from 'src/ts/storage/chatStorage';
     import { type character } from "src/ts/storage/database.svelte";
     import { DBState } from 'src/ts/stores.svelte';
     import PlaygroundImageGen from "./PlaygroundImageGen.svelte";
@@ -23,13 +25,15 @@
 
     let easterEggTouch = $state(0)
 
-    const playgroundChat = () => {
+    const playgroundChat = async () => {
+        await ensureCharacterReady('§playground')
         const charIndex = findCharacterIndexbyId('§playground')
         PlaygroundStore.set(2)
 
         if (charIndex !== -1) {
 
             const char = DBState.db.characters[charIndex] as character
+            if (char.chats?.[char.chatPage]?._placeholder && !await ensureChatHydrated(char.chats, char.chatPage, char.chaId)) return
             char.utilityBot = true
             char.name = 'assistant'
             char.firstMessage = '{{none}}'

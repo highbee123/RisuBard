@@ -1333,7 +1333,6 @@ import { isMobile } from 'src/ts/platform'
                                 <ReplyIcon /><span>{language.autoSuggest}</span>
                             </ShDropdownMenuItem>
                             <ShDropdownMenuItem onSelect={() => {
-                                DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].modules ??= []
                                 openModuleList = true
                             }}>
                                 <PackageIcon /><span>{language.modules}</span>

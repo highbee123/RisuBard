@@ -65,8 +65,12 @@ describe('RisuBard mode settings', () => {
         expect(settingsData).toContain("bindKey: 'risuBardRecentMessageCount'")
         expect(settingsData).toContain("bindKey: 'risuBardResponseMessageCount'")
         expect(settingsData).toContain("bindKey: 'risuBardResponseExcludeUserMessages'")
+        expect(settingsData).toContain("bindKey: 'risuBardAnalysisExcludeUserMessages'")
         expect(processSource).toContain(
             '!resolvedRisuBardSettings(currentChat).risuBardResponseExcludeUserMessages'
+        )
+        expect(processSource).toContain(
+            '!settings.risuBardAnalysisExcludeUserMessages'
         )
         expect(settingsData).toContain('min: 1')
         const currentChatSettings = readFileSync(

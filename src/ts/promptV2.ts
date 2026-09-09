@@ -474,3 +474,56 @@ export function setPromptV2TextSource(item: PromptItem, source: string): void {
         item.innerFormat = source
     }
 }
+
+function promptV2BodySearchExpression(search: string): RegExp | null {
+    const query = search.trim()
+    if (!query) return null
+    return new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi')
+}
+
+export function countPromptV2BodyMatches(item: PromptItem, search: string): number {
+    const source = getPromptV2TextSource(item)
+    const expression = promptV2BodySearchExpression(search)
+    if (!source || !expression) return 0
+    return Array.from(parsePromptV2Text(source.source).body.matchAll(expression)).length
+}
+
+export function replacePromptV2BodyMatches(
+    items: PromptItem[],
+    search: string,
+    replacement: string,
+    selectedIndex?: number,
+): { items: PromptItem[]; replaced: number } {
+    const expression = promptV2BodySearchExpression(search)
+    if (!expression) return { items, replaced: 0 }
+
+    const targetIndexes = selectedIndex === undefined
+        ? items.map((_, index) => index)
+        : [selectedIndex]
+    let next = items
+    let replaced = 0
+
+    for (const index of targetIndexes) {
+        const item = items[index]
+        const source = item && getPromptV2TextSource(item)
+        if (!source) continue
+        const parsed = parsePromptV2Text(source.source)
+        const matches = Array.from(parsed.body.matchAll(expression))
+        const replacing = selectedIndex === undefined ? matches : matches.slice(0, 1)
+        if (replacing.length === 0) continue
+
+        const match = replacing[0]
+        const changedBody = selectedIndex === undefined
+            ? parsed.body.replace(expression, () => replacement)
+            : parsed.body.slice(0, match.index)
+                + replacement
+                + parsed.body.slice((match.index ?? 0) + match[0].length)
+        const changed = { ...item } as PromptItem
+        setPromptV2TextSource(changed, compilePromptV2Text(changedBody, parsed.activation))
+        if (next === items) next = [...items]
+        next[index] = changed
+        replaced += replacing.length
+    }
+
+    return { items: next, replaced }
+}

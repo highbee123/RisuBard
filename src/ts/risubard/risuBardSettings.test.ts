@@ -159,21 +159,49 @@ describe('RisuBard analysis settings', () => {
     test('resolves current-chat overrides over normalized global defaults', () => {
         const resolved = resolveRisuBardChatSettings({
             risuBardModelMode: 'memory',
+            risuBardBardChanModelMode: 'memory',
+            risuBardBardChanEnabled: true,
             risuBardRecentMessageCount: 12,
             risuBardResponseMessageCount: 20,
             showRequestStatus: true,
         }, {
             risuBardModelMode: 'model',
+            risuBardBardChanModelMode: 'model',
+            risuBardBardChanEnabled: false,
             risuBardRecentMessageCount: 7,
             risuBardResponseExcludeUserMessages: true,
+            risuBardAnalysisExcludeUserMessages: true,
             showRequestStatus: false,
         })
 
         expect(resolved.risuBardModelMode).toBe('model')
+        expect(resolved.risuBardBardChanModelMode).toBe('model')
+        expect(resolved.risuBardBardChanEnabled).toBe(false)
         expect(resolved.risuBardRecentMessageCount).toBe(7)
         expect(resolved.risuBardResponseMessageCount).toBe(20)
         expect(resolved.risuBardResponseExcludeUserMessages).toBe(true)
+        expect(resolved.risuBardAnalysisExcludeUserMessages).toBe(true)
         expect(resolved.showRequestStatus).toBe(false)
+    })
+
+    test('includes user messages in response and analysis by default', () => {
+        const resolved = resolveRisuBardChatSettings({})
+        expect(resolved.risuBardResponseExcludeUserMessages).toBe(false)
+        expect(resolved.risuBardAnalysisExcludeUserMessages).toBe(false)
+    })
+
+    test('keeps Bard-chan opt-in and disabled by default', () => {
+        expect(resolveRisuBardChatSettings({}).risuBardBardChanEnabled)
+            .toBe(false)
+        expect(resolveRisuBardChatSettings({}).risuBardBardChanModelMode)
+            .toBe('memory')
+        expect(resolveRisuBardChatSettings({
+            risuBardBardChanEnabled: true,
+            risuBardBardChanModelMode: 'model',
+        }).risuBardBardChanEnabled).toBe(true)
+        expect(resolveRisuBardChatSettings({
+            risuBardBardChanModelMode: 'model',
+        }).risuBardBardChanModelMode).toBe('model')
     })
 
     test('resolves per-chat BARDCHAT context selections with token-saving defaults', () => {
