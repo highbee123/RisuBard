@@ -48,6 +48,7 @@ jobs:
             update.sh
             LICENSE
             NOTICE.md
+            recover-save.bat
           retention-days: 1
 
   portable:
@@ -305,6 +306,8 @@ jobs:
         run: |
           mkdir -p portable/scripts
           cp scripts/updater.cjs portable/scripts/updater.cjs 2>/dev/null || true
+          cp scripts/recover-save-index.cjs portable/scripts/recover-save-index.cjs
+          cp scripts/recover-save.ps1 portable/scripts/recover-save.ps1
           touch portable/.portable
 
       - name: Package portable (Windows)

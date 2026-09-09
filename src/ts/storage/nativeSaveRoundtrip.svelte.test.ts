@@ -51,6 +51,54 @@ async function fixture() {
 }
 
 describe('reactive native saves against the file store', () => {
+    it.each([
+        { label: 'character lorebook', target: { kind: 'character', id: 'a' }, field: 'globalLore', text: 'content', owner: (db: any) => db.characters[0] },
+        { label: 'chat lorebook', target: { kind: 'chat', id: 'c', parentId: 'a' }, field: 'localLore', text: 'content', owner: (db: any) => db.characters[0].chats[0] },
+        { label: 'global lorebook', target: { kind: 'lorebook', id: 'l' }, field: 'data', text: 'content', owner: (db: any) => db.loreBook[0] },
+        { label: 'module lorebook', target: { kind: 'module', id: 'm' }, field: 'lorebook', text: 'content', owner: (db: any) => db.modules[0] },
+        { label: 'module regex', target: { kind: 'module', id: 'm' }, field: 'regex', text: 'out', owner: (db: any) => db.modules[0] },
+        { label: 'character regex', target: { kind: 'character', id: 'a' }, field: 'customscript', text: 'out', owner: (db: any) => db.characters[0] },
+        { label: 'active prompt', target: { kind: 'settings', id: 'global' }, field: 'promptTemplate', text: 'text', owner: (db: any) => db },
+        { label: 'prompt preset', target: { kind: 'prompt', id: 'p' }, field: 'promptTemplate', text: 'text', owner: (db: any) => db.botPresets[0] },
+        { label: 'chat message', target: { kind: 'chat', id: 'c', parentId: 'a' }, field: 'message', text: 'data', owner: (db: any) => db.characters[0].chats[0] },
+    ])('preserves $label input during and after autosave', async ({ target, field, text, owner }) => {
+        const f = await fixture(); await f.runtime.hydrateCharacter('a')
+        f.db().modules.push({ id: 'm', name: 'Module' })
+        f.db().loreBook.push({ id: 'l', name: 'Lorebook', data: [] })
+        f.db().botPresets.push({ id: 'p', name: 'Preset' })
+        owner(f.db())[field] = [{ ...(text === 'content' ? { id: 'entry' } : {}), role: 'user', [text]: 'original' }]
+        await f.runtime.persist()
+        const editing = owner(f.db())[field][0]
+        editing[text] = 'partial'
+        const pending = f.runtime.persist()
+        editing[text] = 'typed during save'
+        await pending
+        expect(owner(f.db())[field][0][text]).toBe('typed during save')
+        editing[text] = 'latest completed input'
+        flushSync()
+        await f.runtime.persist()
+        expect(owner(f.db())[field][0][text]).toBe('latest completed input')
+        expect(f.store.read(target).value[field][0][text]).toBe('latest completed input')
+    })
+
+    it('keeps the persona editor connected when an image is normalized during save', async () => {
+        const f = await fixture(); await f.runtime.hydrateCharacter('a')
+        fs.mkdirSync(path.join(f.root, 'shared/assets'), { recursive: true })
+        fs.writeFileSync(path.join(f.root, 'shared/assets/source.png'), 'image')
+        fs.writeFileSync(path.join(f.root, 'settings/asset-files.json'), JSON.stringify({
+            schemaVersion: 2, entries: { 'assets/source.png': { paths: ['shared/assets/source.png'] } },
+        }))
+        const editingPersona = f.db().characters[0].personas[0]
+        editingPersona.icon = 'assets/source.png'
+        await f.runtime.persist({ character: ['a'] })
+        editingPersona.name = '세오딘'
+        editingPersona.personaPrompt = '세오딘 아이바홀'
+        await f.runtime.persist({ character: ['a'] })
+        expect(f.store.read({ kind: 'character', id: 'a' }).value.personas[0]).toMatchObject({
+            name: '세오딘', personaPrompt: '세오딘 아이바홀', icon: expect.stringMatching(/^assets\/owned-/),
+        })
+    })
+
     it.each([false, true])('keeps persona edits connected across autosaves (external edit: %s)', async (externalEdit) => {
         const f = await fixture(); await f.runtime.hydrateCharacter('a'); flushSync()
         // The mounted persona editor holds this object throughout typing.

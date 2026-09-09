@@ -36,6 +36,31 @@ test('hydrates cold chat bodies and compares extension fields through a complete
     expect(restored.extension).toEqual(db.extension)
 })
 
+test.each(['inline', 'empty', 'cold-chat', 'cold-character'])('imports a legacy hybrid %s chat without losing its payload', async source => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rb-hybrid-import-')); roots.push(root)
+    const chat = { id: 'chat', name: 'Imported chat', _stub: true, folderId: 'folder', modules: ['module'],
+        message: source === 'empty' ? [] : [{ role: 'char', data: 'Preserved conversation', extension: { swipes: ['alternate'] } }],
+        localLore: [{ key: 'lore', content: 'Preserved lore' }], scriptstate: { score: 7 }, note: 'Preserved note' }
+    const character = { chaId: 'char', chats: [chat] }
+    const incoming = source === 'cold-character' ? { chaId: 'char', coldstorage: 'cold', chats: [] }
+        : source === 'cold-chat' ? { ...character, chats: [{ ...chat, message: [{ data: '\uEF01COLDSTORAGE\uEF01cold' }] }] }
+        : character
+    const decoded = await decodeImportDatabase(encodeRisuSaveLegacy({ characters: [incoming] }), (key: string) =>
+        key === 'coldstorage/cold' ? Buffer.from(JSON.stringify(source === 'cold-character' ? { character } : chat)) : null)
+    const restored = stageCanonicalDatabase(root, decoded)
+    const { _stub, ...expected } = chat
+    expect(restored.characters[0].chats[0]).toEqual(expected)
+})
+
+test.each([undefined, null, 'invalid'])('still rejects a legacy stub with message=%s before saving canonical files', async message => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rb-incomplete-import-')); roots.push(root)
+    const decoded = await decodeImportDatabase(encodeRisuSaveLegacy({
+        characters: [{ chaId: 'char', chats: [{ id: 'chat', _stub: true, message }] }],
+    }), () => null)
+    expect(() => stageCanonicalDatabase(root, decoded)).toThrow('Incomplete chat: hydrate messages before saving canonical files')
+    expect(fs.existsSync(path.join(root, 'characters'))).toBe(false)
+})
+
 test('strict staged import preserves all fields while assigning independent owner references', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rb-owner-import-')); roots.push(root)
     const db = { characters: [{ chaId: 'c', image: 'assets/a', chats: [] }], personas: [{ id: 'p', image: 'assets/a' }],

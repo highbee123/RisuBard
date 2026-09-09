@@ -152,6 +152,45 @@ describe('native runtime', () => {
         const commits = f.calls.filter(c => c.path.endsWith('/commit'))
         expect(commits[1].body.writes[0]).toMatchObject({ expectedRevision: 'r2', value: { desc: 'newer' } })
     })
+    it('keeps editors attached by ID when acknowledgment reorders and removes entries', async () => {
+        let normalize = true
+        const f = fixture({ commit: async (_body, result) => {
+            if (normalize) {
+                const document = result.documents.find((entry: any) => entry.target.kind === 'character')
+                const [first, , last] = document.value.personas
+                document.value = { ...document.value, personas: [{ ...last, icon: 'normalized' }, first] }
+                normalize = false
+            }
+            return result
+        } })
+        f.setDb(await f.runtime.bootstrap()); await f.runtime.ensureCharacter('a')
+        f.db().characters[0].personas = [{ id: 'first', name: 'First' }, { id: 'removed', name: 'Removed' }, { id: 'last', name: 'Last' }]
+        const editing = f.db().characters[0].personas[2]
+        await f.runtime.persist()
+        editing.name = 'Latest'
+        await f.runtime.persist()
+        const writes = f.calls.filter(call => call.path.endsWith('/commit')).at(-1).body.writes
+        expect(writes[0].value.personas).toEqual([{ id: 'last', name: 'Latest', icon: 'normalized' }, { id: 'first', name: 'First' }])
+    })
+    it('keeps nested settings edits connected after server-side normalization', async () => {
+        let normalize = true
+        const f = fixture({ commit: async (_body, result) => {
+            if (normalize) {
+                const document = result.documents.find((entry: any) => entry.target.kind === 'settings')
+                document.value = { ...document.value, customSettings: { ...document.value.customSettings, normalized: true } }
+                normalize = false
+            }
+            return result
+        } })
+        f.setDb(await f.runtime.bootstrap())
+        f.db().customSettings = { text: 'Partial' }
+        const editing = f.db().customSettings
+        await f.runtime.persist()
+        editing.text = 'Latest'
+        await f.runtime.persist()
+        const writes = f.calls.filter(call => call.path.endsWith('/commit')).at(-1).body.writes
+        expect(writes[0].value.customSettings).toEqual({ text: 'Latest', normalized: true })
+    })
     it('retains dirty local documents and revisions on a 409 without a full-state fallback', async () => {
         const f = fixture({ commit: async () => { throw new Error('409 conflict') } })
         f.setDb(await f.runtime.bootstrap()); await f.runtime.ensureCharacter('a')

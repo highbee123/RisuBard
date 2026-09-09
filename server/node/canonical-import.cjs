@@ -46,6 +46,9 @@ async function decodeImportDatabase(raw, getEntry) {
                     if (!Array.isArray(full) && key in full) chat[key] = full[key];
                 }
             }
+            // Legacy hybrid chats can retain a stub flag alongside their
+            // full payload. Normalize only after any cold body is restored.
+            if (chat._stub === true && Array.isArray(chat.message)) delete chat._stub;
         }
     }
     return database;

@@ -10,6 +10,30 @@ const chatValue = (value: any) => strip(value, ['_placeholder', '_stub'])
 const metadata = (value: any) => Object.fromEntries(chatMetadataFields.filter(key => key in value).map(key => [key, value[key]]))
 const settingsValue = (db: any) => strip(db, ['characters', ...Object.keys(collections)])
 const placeholder = (value: any) => ({ message: [], note: '', localLore: [], fmIndex: -1, ...value, _placeholder: true })
+
+// Publish already-merged values without detaching editors of the same object.
+// Array membership follows the merged result; only stable IDs retain identity.
+function reconcileSavedValue(current: any, next: any): any {
+    if (nativeEqual(current, next)) return current
+    if (Array.isArray(current) && Array.isArray(next)) {
+        const hasUniqueIds = (items: any[]) => items.every(item => typeof item?.id === 'string' && item.id.length > 0)
+            && new Set(items.map(item => item.id)).size === items.length
+        if (hasUniqueIds(current) && hasUniqueIds(next)) {
+            const byId = new Map(current.map(item => [item.id, item]))
+            const values = next.map(item => reconcileSavedValue(byId.get(item.id), item))
+            for (let index = 0; index < values.length; index++) current[index] = values[index]
+            current.length = values.length
+            return current
+        }
+    } else if (current && next && typeof current === 'object' && typeof next === 'object'
+        && !Array.isArray(current) && !Array.isArray(next)) {
+        for (const key of Object.keys(current)) if (!(key in next)) delete current[key]
+        for (const [key, value] of Object.entries(next)) current[key] = reconcileSavedValue(current[key], value)
+        return current
+    }
+    return nativeClone(next)
+}
+
 export interface NativeSaveScope { root?: boolean; plugins?: boolean; pluginCustomStorage?: boolean; modules?: boolean; botPreset?: boolean; character?: string[]; chat?: [string, string][] }
 
 export class NativeRuntime {
@@ -345,7 +369,7 @@ export class NativeRuntime {
             const merged = mergeAcknowledgedValue(write.metadataOnly ? metadata(current) : this.value(write.target), write.value, envelope.value)
             const keys = write.metadataOnly ? chatMetadataFields : Object.keys(write.value)
             for (const key of keys) if (!(key in merged)) delete current[key]
-            Object.assign(current, merged)
+            for (const [key, value] of Object.entries(merged)) current[key] = reconcileSavedValue(current[key], value)
             if (write.metadataOnly) this.cache.rememberSummary(write.target, metadata(envelope.value))
         }
         this.view = view
