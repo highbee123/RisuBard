@@ -18,7 +18,9 @@ async function fixture() {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rb-save-loop-'))
     cleanup.push(() => fs.rmSync(root, { recursive: true, force: true }))
     createUserDataRepository({ dataRoot: root, formatVersion: 2 }).importLegacyDatabase({
-        characters: [{ chaId: 'a', name: 'A', desc: 'old', chats: [{ id: 'c', name: 'C', message: [{ role: 'user', data: 'old' }] }] }],
+        characters: [{ chaId: 'a', name: 'A', desc: 'old',
+            personas: [{ id: 'persona-a', name: '라인델', personaPrompt: '라인델 아이바홀' }],
+            chats: [{ id: 'c', name: 'C', message: [{ role: 'user', data: 'old' }] }] }],
         modules: [], personas: [], botPresets: [], loreBook: [], username: 'User',
     }, { mode: 'replace' })
     const store = createNativeDocumentStore({ dataRoot: root })
@@ -49,6 +51,25 @@ async function fixture() {
 }
 
 describe('reactive native saves against the file store', () => {
+    it.each([false, true])('keeps persona edits connected across autosaves (external edit: %s)', async (externalEdit) => {
+        const f = await fixture(); await f.runtime.hydrateCharacter('a'); flushSync()
+        // The mounted persona editor holds this object throughout typing.
+        const editingPersona = f.db().characters[0].personas[0]
+        editingPersona.personaPrompt = '세오 아이바홀'
+        if (externalEdit) fs.writeFileSync(path.join(f.root, 'characters/A/description.md'), 'external')
+        await f.runtime.persist({ character: ['a'] }); flushSync()
+
+        editingPersona.name = '세오딘'
+        editingPersona.personaPrompt = '세오딘 아이바홀'
+        flushSync()
+        expect(f.db().characters[0].personas[0]).toMatchObject({ name: '세오딘', personaPrompt: '세오딘 아이바홀' })
+        expect(await f.runtime.persist({ character: ['a'] })).toBe(true)
+        await f.runtime.ensureCharacter('a', true)
+        expect(f.db().characters[0].personas[0]).toMatchObject({ name: '세오딘', personaPrompt: '세오딘 아이바홀' })
+        expect(f.store.read({ kind: 'character', id: 'a' }).value.personas[0]).toMatchObject({ name: '세오딘', personaPrompt: '세오딘 아이바홀' })
+        if (externalEdit) expect(f.db().characters[0].desc).toBe('external')
+    })
+
     it('loads without saves, saves an edit once, and ignores server acknowledgment changes', async () => {
         const f = await fixture()
         expect(f.changed).toEqual([])

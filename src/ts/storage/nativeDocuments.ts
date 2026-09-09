@@ -15,9 +15,13 @@ export const nativeEqual = (left: unknown, right: unknown) => {
 
 /** Apply server canonicalization only where the current value still equals what we sent. */
 export function mergeAcknowledgedValue(current: any, sent: any, acknowledged: any): any {
-    if (nativeEqual(current, sent)) return nativeClone(acknowledged)
-    if (!current || !sent || !acknowledged || typeof current !== 'object' || Array.isArray(current)
-        || Array.isArray(sent) || Array.isArray(acknowledged)) return current
+    // An ordinary save acknowledgment must not detach objects held by editors.
+    // Recurse through changed objects so unrelated server normalization also
+    // preserves the live references of unchanged fields (including personas).
+    if (nativeEqual(sent, acknowledged) || nativeEqual(current, acknowledged)) return current
+    if (![current, sent, acknowledged].every(value => value && typeof value === 'object' && !Array.isArray(value))) {
+        return nativeEqual(current, sent) ? nativeClone(acknowledged) : current
+    }
     const merged = { ...current }
     for (const key of new Set([...Object.keys(sent), ...Object.keys(acknowledged)])) {
         const next = mergeAcknowledgedValue(current[key], sent[key], acknowledged[key])
