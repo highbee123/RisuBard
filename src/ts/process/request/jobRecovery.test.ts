@@ -842,10 +842,11 @@ describe('PageFold recovery', () => {
     })
 })
 
-test.each([true, false])('defers a disconnected PDF attempt until recovery and stores its final outcome exactly once, success=%s', async success => {
+test.each([['done', 200], ['done', 500], ['failed', null]] as const)('defers a disconnected PDF attempt until recovery and stores its final outcome exactly once, status=%s HTTP=%s', async (jobStatus, upstreamStatus) => {
+    const success = jobStatus === 'done' && upstreamStatus === 200
     const { recovery } = await loadModules()
     const { createRequestLogScope, recordRequestLog } = await import('src/ts/requestLog')
-    const { markFailed } = await import('src/ts/preset/pageFold/runtime')
+    const { markFailed, markRecoverableJob } = await import('src/ts/preset/pageFold/runtime')
     const { ModelJobConnectionLostError } = await import('./jobFetch')
     const { createRequire } = await import('node:module')
     const fs = await import('node:fs')
@@ -872,7 +873,8 @@ test.each([true, false])('defers a disconnected PDF attempt until recovery and s
             return serverFetch(input, init)
         })
         const metadata: any = { version: 1, kind: 'google', requestId: 'same-attempt', presetId: 'p', comparable: true, baselineTokens: 100, inputPrice: 1 }
-        const job = makeJob({ adapterKind: 'google-gemini', streaming: false, upstreamStatus: success ? 200 : 500, pageFold: { ...metadata } })
+        const job = makeJob({ adapterKind: 'google-gemini', streaming: false, status: jobStatus, upstreamStatus, pageFold: { ...metadata } })
+        markRecoverableJob(metadata)
         const scope = createRequestLogScope({ category: 'llm', source: 'main', pageFold: true })
         const lost = new ModelJobConnectionLostError()
         const wrapped = scope.wrap(async () => new Response(new ReadableStream({ start(controller) { controller.error(lost) } })))
@@ -887,6 +889,10 @@ test.each([true, false])('defers a disconnected PDF attempt until recovery and s
             expect(chat.message.at(-1).data).toBe('OK')
             expect(recovered).toMatchObject({ success: true, inputTokens: 20, outputTokens: 3, reasoningTokens: 2, pageFold: { requestId: 'same-attempt', savedTokens: 80, savedUsd: 0.00008 } })
         } else expect(recovered).toMatchObject({ success: false, pageFold: { requestId: 'same-attempt', savedTokens: null, savedUsd: null } })
+        if (jobStatus === 'failed') {
+            expect(recovered.inputTokens).toBeUndefined()
+            expect(recovered.outputTokens).toBeUndefined()
+        }
         recordRequestLog(recovered)
         await vi.waitFor(() => expect(accepted).toEqual([1, 0]))
         expect(store.queryUsage({}).total.requests).toBe(1)
@@ -895,4 +901,17 @@ test.each([true, false])('defers a disconnected PDF attempt until recovery and s
         if (path.dirname(path.resolve(saveDir)) !== path.resolve(os.tmpdir()) || !path.basename(saveDir).startsWith('risubard-pagefold-recovery-')) throw Error('Unsafe test cleanup')
         fs.rmSync(saveDir, { recursive: true, force: true })
     }
+})
+
+test('preserves the existing non-PDF failed-job recovery path without adding a log', async () => {
+    const { recovery } = await loadModules()
+    const logs = await import('src/ts/requestLog')
+    const record = vi.spyOn(logs, 'recordRequestLog').mockImplementation(() => {})
+    try {
+        mocks.db.characters = [makeChar(makeChat())]
+        const { claims } = setupServer({})
+        await recovery.recoverTerminalJob(makeJob({ status: 'failed', error: 'server restart' }) as any)
+        expect(record).not.toHaveBeenCalled()
+        expect(claims()).toEqual(['/api/model-jobs/job-1/claim'])
+    } finally { record.mockRestore() }
 })

@@ -507,21 +507,27 @@ it('waits for the in-flight PDF price before posting the completed log', async (
 })
 
 it.each([true, false])('defers only PDF statistics for a recoverable journal disconnect, PDF=%s', async enabled => {
+    const { markRecoverableJob } = await import('./preset/pageFold/runtime')
+    const metadata = { version: 1 as const, requestId: 'lost' }
+    if (enabled) markRecoverableJob(metadata)
     const { ModelJobConnectionLostError } = await import('./process/request/jobFetch')
     const scope = createRequestLogScope({ category: 'llm', source: 'main', pageFold: enabled })
     const wrapped = scope.wrap(async () => new Response(new ReadableStream({ start(controller) { controller.error(new ModelJobConnectionLostError()) } })))
-    const res = await wrapped('https://example.test', { __pageFold: enabled ? { version: 1, requestId: 'lost' } : undefined } as any)
+    const res = await wrapped('https://example.test', { __pageFold: enabled ? metadata : undefined } as any)
     await expect(res.text()).rejects.toThrow()
     await scope.close()
     expect(posted.flat()).toHaveLength(enabled ? 0 : 1)
 })
 
 it('retains an explicit user abort when a PDF journal disconnect races with it', async () => {
+    const { markRecoverableJob } = await import('./preset/pageFold/runtime')
+    const metadata = { version: 1 as const, requestId: 'aborted', comparable: true, baselineTokens: 100 }
+    markRecoverableJob(metadata)
     const { ModelJobConnectionLostError } = await import('./process/request/jobFetch')
     const abort = new AbortController()
     const scope = createRequestLogScope({ category: 'llm', source: 'main', pageFold: true })
     const wrapped = scope.wrap(async () => new Response(new ReadableStream({ start(controller) { controller.error(new ModelJobConnectionLostError()) } })))
-    const res = await wrapped('https://example.test', { signal: abort.signal, __pageFold: { version: 1, requestId: 'aborted', comparable: true, baselineTokens: 100 } } as any)
+    const res = await wrapped('https://example.test', { signal: abort.signal, __pageFold: metadata } as any)
     abort.abort()
     await expect(res.text()).rejects.toThrow()
     await scope.close()

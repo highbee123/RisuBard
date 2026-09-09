@@ -184,11 +184,13 @@ export async function prepare<T extends AdapterPreparedRequest>(prepared: T, pre
 const pendingPrices = new WeakMap<PageFoldMetadata, Promise<DiscoveredPrice | null>>();
 const attemptFailures = new WeakMap<PageFoldMetadata, string>();
 const awaitingRecovery = new WeakSet<PageFoldMetadata>();
+const recoverableJobs = new WeakSet<PageFoldMetadata>();
+export function markRecoverableJob(metadata: PageFoldMetadata): void { recoverableJobs.add(metadata); }
 export function markFailed(prepared: Pick<AdapterPreparedRequest, '__pageFold'>, error: unknown): void {
   if (!prepared.__pageFold) return;
   // jobFetch uses this error when the journal connection is lost, not when
   // generation fails. Recovery owns the final record for this requestId.
-  if (error instanceof Error && error.name === 'ModelJobConnectionLostError') {
+  if (recoverableJobs.has(prepared.__pageFold) && error instanceof Error && error.name === 'ModelJobConnectionLostError') {
     awaitingRecovery.add(prepared.__pageFold);
     return;
   }

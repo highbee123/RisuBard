@@ -463,6 +463,7 @@ export async function recoverTerminalJob(job: ModelJobRecord): Promise<void> {
         diag(`recover ${job.id.slice(0, 8)}: failed job, existingIdx=${existingIdx}`)
         const mutated = existingIdx === -1 && insertJobError(loc, job, job.error ?? 'Model request failed')
         if (needsSave(mutated, existingIdx) && !(await persistRecoveredChat(loc, job))) return
+        if (job.pageFold) recordJobRecoveryLog(job, { ok: false, error: job.error ?? 'Model request failed' })
         await claimJob(job.id)
         return
     }

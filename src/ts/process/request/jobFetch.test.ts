@@ -326,3 +326,31 @@ describe('makeJobFetch', () => {
         expect(opts.fallbackFetch).not.toHaveBeenCalled()
     })
 })
+
+test.each(['main', 'aux'] as const)('only defers PDF journal disconnects for successfully created %s jobs', async jobKind => {
+    const { markFailed, finalizeLogs } = await import('src/ts/preset/pageFold/runtime')
+    const usage = 'data: {"usage":{"prompt_tokens":20}}\n\n'
+    setupServer({ streamChunks: [usage], job: { status: 'running' } })
+    const metadata: any = { version: 1, requestId: jobKind, comparable: true, baselineTokens: 100 }
+    const route = jobFetchModule.resolveModelJobRoute({ realChatId: 'chat-1', generationId: 'gen-1', logSource: jobKind === 'main' ? 'main' : 'translate' })
+    expect(route.jobKind).toBe(jobKind)
+    const response = await makeJobFetch(makeOpts({ ...route, reconnectBaseDelayMs: 1 }))('https://provider.example/v1/chat', { method: 'POST', body: '{}', __pageFold: metadata } as any)
+    let error: unknown
+    try { await drain(response) } catch (caught) { error = caught }
+    expect(error).toBeInstanceOf(ModelJobConnectionLostError)
+    markFailed({ __pageFold: metadata }, error)
+    const rows = finalizeLogs([{ success: true, responseBody: usage, pageFold: metadata }], true)
+    expect(rows).toHaveLength(jobKind === 'main' ? 0 : 1)
+    if (jobKind === 'aux') expect(rows[0]).toMatchObject({ success: false, inputTokens: 20, pageFold: { savedTokens: null } })
+})
+
+test('does not mark a PDF request recoverable when job creation falls back to direct transport', async () => {
+    const { markFailed, finalizeLogs } = await import('src/ts/preset/pageFold/runtime')
+    setupServer({ create: { status: 503 } })
+    const metadata = { version: 1 as const, requestId: 'fallback' }
+    const fallbackFetch = vi.fn(async () => new Response('direct'))
+    const response = await makeJobFetch(makeOpts({ jobKind: 'main', fallbackFetch }))('https://provider.example/v1/chat', { __pageFold: metadata } as any)
+    expect(await response.text()).toBe('direct')
+    markFailed({ __pageFold: metadata }, new ModelJobConnectionLostError())
+    expect(finalizeLogs([{ success: true, pageFold: metadata }], true)).toMatchObject([{ success: false }])
+})

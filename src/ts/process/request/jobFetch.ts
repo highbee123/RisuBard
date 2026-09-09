@@ -1,4 +1,5 @@
 import type { PageFoldRequestInit } from 'src/ts/preset/pageFold/types'
+import { markRecoverableJob } from 'src/ts/preset/pageFold/runtime'
 import { forageStorage } from 'src/ts/globalApi.svelte'
 import { language } from 'src/lang'
 import type { RequestLogSource } from 'src/ts/requestLog'
@@ -142,6 +143,8 @@ export function makeJobFetch(opts: JobFetchOptions): typeof fetch {
             return opts.fallbackFetch(input, init)
         }
         const jobId: string = (await created.json()).jobId
+        const pdf = (init as PageFoldRequestInit)?.__pageFold
+        if (pdf && (opts.jobKind ?? 'main') === 'main') markRecoverableJob(pdf)
 
         // Abort propagation: aborting the request DELETEs the job (server
         // aborts the upstream) and cancels the local stream fetch (same
