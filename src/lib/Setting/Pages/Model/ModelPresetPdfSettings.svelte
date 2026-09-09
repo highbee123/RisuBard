@@ -17,9 +17,6 @@
     let priceOpen = $state(false), statsOpen = $state(false)
     function save(values: Partial<ModelPresetPdfConfig>) {
         preset.pageFold = { ...settings, ...values } as ModelPresetPdfConfig
-        if (values.enabled && preset.promptCaching?.enabled) {
-            preset.promptCaching = { ...preset.promptCaching, enabled: false }
-        }
         preset.updatedAt = Date.now()
     }
     $effect(() => {

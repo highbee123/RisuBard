@@ -13,7 +13,7 @@ beforeEach(() => {
 })
 afterEach(async () => { if (mounted) await unmount(mounted); mounted = undefined; document.body.innerHTML = ''; vi.unstubAllGlobals() })
 
-it('keeps PDF settings off by default, expands on enable and preserves values across model changes', async () => {
+it('keeps PDF settings off by default, expands on enable and preserves PDF and cache settings across toggles and model changes', async () => {
     const preset: any = $state({ id: 'p', name: 'Existing', profileSnapshot: { modelId: 'gemini-demo' }, promptCaching: { enabled: true, ttlSec: 600 } })
     mounted = mount(ModelPresetPdfSettings, { target: document.body, props: { preset } })
     flushSync()
@@ -23,7 +23,7 @@ it('keeps PDF settings off by default, expands on enable and preserves values ac
     expect(preset.pageFold).toBeUndefined()
     toggle.click(); flushSync()
     expect(preset.pageFold.enabled).toBe(true)
-    expect(preset.promptCaching).toEqual({ enabled: false, ttlSec: 600 })
+    expect(preset.promptCaching).toEqual({ enabled: true, ttlSec: 600 })
     expect(document.body.textContent).not.toContain(language.pageFold.usage)
     expect(document.body.textContent).toContain(language.pageFold.openStats)
     expect(document.body.textContent).toContain(language.pageFold.priceSettings)
@@ -42,7 +42,7 @@ it('keeps PDF settings off by default, expands on enable and preserves values ac
     expect(document.querySelector('#pagefold-font')).toBeNull()
     expect(document.body.textContent).not.toContain(language.pageFold.priceSettings)
     expect(document.body.textContent).toContain(language.pageFold.openStats)
-    expect(preset.promptCaching.enabled).toBe(false)
+    expect(preset.promptCaching).toEqual({ enabled: true, ttlSec: 600 })
     expect(document.querySelector('[data-pagefold-settings]')?.classList.contains('border')).toBe(false)
     expect(document.querySelector('#pagefold-native-style')).toBeNull()
     await tick()

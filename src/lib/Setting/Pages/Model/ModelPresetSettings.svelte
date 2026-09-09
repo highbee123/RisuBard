@@ -71,12 +71,6 @@
     );
 
     const pdfActive = $derived(!!editingPreset && pdfState(editingPreset).active);
-    $effect(() => {
-        if (pdfActive && editingPreset?.promptCaching?.enabled) {
-            editingPreset.promptCaching = { ...editingPreset.promptCaching, enabled: false };
-            editingPreset.updatedAt = Date.now();
-        }
-    });
 
     // If the preset being edited disappears (deleted elsewhere), fall back to list.
     $effect(() => {
@@ -328,7 +322,7 @@
                             {#snippet icon()}<TriangleAlertIcon />{/snippet}
                             {language.modelPresetCachePluginWarning}
                         </ShAlert>
-                        {#if editingPreset.promptCaching?.enabled}
+                        {#if !pdfActive && editingPreset.promptCaching?.enabled}
                             <div class="flex items-center justify-between gap-3 pl-4">
                                 <div class="flex flex-col gap-0.5 min-w-0">
                                     <span class="text-sm text-textcolor">{language.modelPresetCacheTtl}</span>
