@@ -5,7 +5,8 @@ const fs = require('fs');
 const fsp = require('fs/promises');
 const os = require('os');
 const path = require('path');
-const { atomicWriteJson, readVerifiedJson, recoverTransactions } = require('./file-store.cjs');
+const { atomicWriteJson, readVerifiedJson, recoverTransactions, commitTransaction, checksumFile } = require('./file-store.cjs');
+const { ASSET_INDEX_PATH, readOwnedAssetIndex, readOwnedAssetIndexForLookup, readOwnedAsset, getOwnedAssetSource, ownedAssetOperationsForWrite, planOwnedAssets } = require('./owned-assets.cjs');
 
 const MANIFEST_PATH = 'kv/manifest.json';
 const HEX_MIGRATION_MARKER = 'migration/legacy-hex-save-folder.json';
@@ -150,7 +151,93 @@ function createFileKv(options = {}) {
         });
     }
 
+    let ownedCache = null;
+    let ownedStamp = null;
+    let ownedCacheStrict = false;
+    function currentOwnedStamp() {
+        try {
+            const stat = fs.statSync(path.join(dataRoot, ASSET_INDEX_PATH), { bigint: true });
+            return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
+        } catch (error) { if (error.code !== 'ENOENT') throw error; }
+        return '';
+    }
+    function ownedIndex() {
+        const stamp = currentOwnedStamp();
+        if (!ownedCache || stamp !== ownedStamp) {
+            ownedCache = readOwnedAssetIndexForLookup(dataRoot);
+            ownedStamp = stamp;
+            ownedCacheStrict = false;
+        }
+        return ownedCache;
+    }
+
+    function strictOwnedIndex() {
+        const stamp = currentOwnedStamp();
+        if (ownedCache && ownedCacheStrict && stamp === ownedStamp) return ownedCache;
+        const index = readOwnedAssetIndex(dataRoot);
+        ownedCache = index;
+        ownedStamp = currentOwnedStamp();
+        ownedCacheStrict = true;
+        return index;
+    }
+
+    function isFileAsset(key) {
+        return key.startsWith('assets/') && (fs.existsSync(path.join(dataRoot, 'settings/layout.json'))
+            || Object.hasOwn(ownedIndex().entries, key));
+    }
+
+    function publishEntries(entries, prepared) {
+        const current = entries.some(entry => entry.key.startsWith('assets/')) ? strictOwnedIndex() : { schemaVersion: 2, entries: {} };
+        const assets = [...new Map(entries.filter(entry => isFileAsset(entry.key)).map(entry => [entry.key,
+            { ...entry, value: Buffer.isBuffer(entry.value) ? entry.value : Buffer.from(entry.value) }])).values()];
+        const nextManifest = { schemaVersion: 1, updatedAt: Date.now(), entries: { ...manifest.entries } };
+        for (const [key, entry] of prepared) nextManifest.entries[key] = entry;
+        if (!assets.length) {
+            if (!entries.length) return;
+            manifest = nextManifest;
+            saveManifest();
+            return;
+        }
+        const next = structuredClone(current);
+        const operations = [];
+        const newAssets = new Map(assets.filter(entry => !Object.hasOwn(current.entries, entry.key)).map(entry => [entry.key, entry.value]));
+        if (newAssets.size) {
+            const plan = planOwnedAssets({ dataRoot, previousIndex: current, allAssetKeys: [...newAssets.keys()],
+                strict: true, readAsset: key => newAssets.get(key) });
+            Object.assign(next.entries, plan.index.entries);
+            operations.push(...plan.operations);
+        }
+        for (const { key, value } of assets) {
+            delete nextManifest.entries[key];
+            if (newAssets.has(key)) continue;
+            const writes = ownedAssetOperationsForWrite(dataRoot, key, value, next);
+            if (!writes.length) continue;
+            operations.push(...writes);
+            next.entries[key].checksum = digest(value);
+        }
+        operations.push({ path: ASSET_INDEX_PATH, data: Buffer.from(JSON.stringify(next)) },
+            { path: MANIFEST_PATH, data: Buffer.from(JSON.stringify(nextManifest)) });
+        commitTransaction(dataRoot, operations);
+        manifest = nextManifest;
+        ownedCache = next;
+        ownedStamp = currentOwnedStamp();
+        ownedCacheStrict = true;
+    }
+
+    function kvGetSourcePath(key) {
+        const source = key.startsWith('assets/') && ownedIndex().entries[key] ? getOwnedAssetSource(dataRoot, key, ownedIndex()) : null;
+        if (source) return source;
+        const entry = manifest.entries[key];
+        if (!entry) return null;
+        if (!/^[a-f0-9]{64}$/.test(entry.object)) throw new Error('Invalid content object hash');
+        const target = path.join(dataRoot, 'kv/objects', entry.object);
+        if (checksumFile(target) !== entry.object) throw new Error(`Content object checksum mismatch for ${key}`);
+        return target;
+    }
+
     function kvGet(key) {
+        const owned = key.startsWith('assets/') && ownedIndex().entries[key] ? readOwnedAsset(dataRoot, key, ownedIndex()) : null;
+        if (owned !== null) return owned;
         const entry = manifest.entries[key];
         if (!entry) return null;
         const objectPath = path.join(dataRoot, 'kv', 'objects', entry.object);
@@ -161,11 +248,7 @@ function createFileKv(options = {}) {
     }
 
     function kvSet(key, value) {
-        const data = Buffer.isBuffer(value) ? value : Buffer.from(value);
-        const hash = digest(data);
-        writeObject(dataRoot, hash, data);
-        manifest.entries[key] = { object: hash, size: data.length, updatedAt: Date.now() };
-        saveManifest();
+        kvSetMany([{ key, value }]);
     }
 
     function prepareEntries(entries) {
@@ -194,17 +277,24 @@ function createFileKv(options = {}) {
     }
 
     function kvSetMany(entries) {
-        for (const [key, entry] of prepareEntries(entries)) manifest.entries[key] = entry;
-        if (entries.length) saveManifest();
+        publishEntries(entries, prepareEntries(entries.filter(entry => !isFileAsset(entry.key))));
     }
 
     async function kvSetManyAsync(entries) {
-        const prepared = await prepareEntriesAsync(entries);
-        for (const [key, entry] of prepared) manifest.entries[key] = entry;
-        if (entries.length) saveManifest();
+        const prepared = await prepareEntriesAsync(entries.filter(entry => !isFileAsset(entry.key)));
+        publishEntries(entries, prepared);
+    }
+
+    function assertLegacyReplacement(entries, prefixes = null) {
+        if (!fs.existsSync(path.join(dataRoot, 'settings/layout.json'))) return;
+        if (entries.some(entry => entry.key.startsWith('assets/'))
+            || Object.keys(strictOwnedIndex().entries).some(key => !prefixes || prefixes.some(prefix => key.startsWith(prefix)))) {
+            throw new Error('Use canonical snapshot import to replace V2 assets');
+        }
     }
 
     function kvReplacePrefixes(entries, prefixes) {
+        assertLegacyReplacement(entries, prefixes);
         const next = { ...manifest.entries };
         for (const key of Object.keys(next)) {
             if (prefixes.some(prefix => key === prefix || key.startsWith(prefix))) delete next[key];
@@ -215,11 +305,13 @@ function createFileKv(options = {}) {
     }
 
     function kvReplaceAll(entries) {
+        assertLegacyReplacement(entries);
         manifest.entries = Object.fromEntries(prepareEntries(entries));
         saveManifest();
     }
 
     async function kvReplacePrefixesAsync(entries, prefixes) {
+        assertLegacyReplacement(entries, prefixes);
         const prepared = await prepareEntriesAsync(entries);
         const next = { ...manifest.entries };
         for (const key of Object.keys(next)) {
@@ -231,6 +323,7 @@ function createFileKv(options = {}) {
     }
 
     async function kvReplacePrefixesFromFilesAsync(entries, prefixes) {
+        assertLegacyReplacement(entries, prefixes);
         const prepared = await prepareFileEntriesAsync(entries);
         const next = { ...manifest.entries };
         for (const key of Object.keys(next)) {
@@ -242,40 +335,159 @@ function createFileKv(options = {}) {
     }
 
     async function kvReplaceAllAsync(entries) {
+        assertLegacyReplacement(entries);
         const prepared = await prepareEntriesAsync(entries);
         manifest.entries = Object.fromEntries(prepared);
         saveManifest();
     }
 
     function kvDel(key) {
-        if (!(key in manifest.entries)) return;
-        delete manifest.entries[key];
-        saveManifest();
+        kvDelMany([key]);
+    }
+
+    // Detach only the duplicate active KV references. Old bytes remain pinned
+    // by a recovery manifest; this operation never deletes object files.
+    function kvDetachOwnedAssets(options = {}) {
+        const index = strictOwnedIndex();
+        const consumed = new Set(options.consumedAssetKeys || []);
+        if ([...consumed].some(key => typeof key !== 'string' || !key.startsWith('assets/'))) throw new Error('Invalid consumed asset key');
+        const keys = Object.keys(manifest.entries).filter(key => Object.hasOwn(index.entries, key) || consumed.has(key));
+        const validationKeys = keys.some(key => consumed.has(key) && !Object.hasOwn(index.entries, key))
+            ? Object.keys(index.entries) : keys;
+        if (keys.length && !validationKeys.length) throw new Error('No canonical owner assets for consumed keys');
+        for (const key of validationKeys) getOwnedAssetSource(dataRoot, key, index);
+        const bytes = [...new Map(keys.map(key => [manifest.entries[key].object, manifest.entries[key].size])).values()]
+            .reduce((total, size) => total + size, 0);
+        const result = { detached: keys.length, bytes, objectsDeleted: 0, recoveryPreserved: true };
+        if (options.dryRun || !keys.length) return result;
+        const next = { schemaVersion: 1, updatedAt: Date.now(), entries: { ...manifest.entries } };
+        for (const key of keys) delete next.entries[key];
+        commitTransaction(dataRoot, [
+            { path: `trash/import-detach-${crypto.randomUUID()}/kv-manifest.json`, data: Buffer.from(JSON.stringify(manifest)) },
+            { path: MANIFEST_PATH, data: Buffer.from(JSON.stringify(next)) },
+        ]);
+        manifest = next;
+        return result;
+    }
+
+    async function kvPublishImportAsync(entries, options) {
+        const fileAssets = new Set(options.ownedAssetKeys || []);
+        const archivedAssets = options.archivedAssetKeys || {};
+        const portable = value => value.split(path.sep).join('/');
+        const published = new Map(options.operations.filter(operation => !operation.archiveTo).map(operation => [portable(operation.path), operation]));
+        for (const [key, relative] of Object.entries(archivedAssets)) {
+            const prefix = `trash/${options.importId}/incoming-assets/`;
+            const operation = published.get(relative);
+            if (!key.startsWith('assets/') || typeof relative !== 'string' || !relative.startsWith(prefix)
+                || !/^[a-f0-9]{64}$/.test(relative.slice(prefix.length)) || !operation) {
+                throw new Error('Missing canonical asset recovery publication for import');
+            }
+            const incoming = entries.find(entry => entry.key === key);
+            if (!incoming) throw new Error('Missing incoming asset for recovery publication');
+            const inputHash = incoming.sourcePath ? checksumFile(incoming.sourcePath) : digest(incoming.value);
+            const archivedHash = operation.sourcePath ? checksumFile(operation.sourcePath) : digest(operation.data);
+            if (inputHash !== archivedHash) throw new Error('Canonical asset recovery checksum mismatch');
+        }
+        if (fileAssets.size) {
+            const mapping = options.operations.find(operation => portable(operation.path) === ASSET_INDEX_PATH);
+            if (!mapping) throw new Error('Missing canonical asset mapping for import');
+            const index = JSON.parse(mapping.sourcePath ? fs.readFileSync(mapping.sourcePath, 'utf8') : Buffer.from(mapping.data).toString('utf8'));
+            for (const key of fileAssets) {
+                const paths = index.entries?.[key]?.paths;
+                if (!key.startsWith('assets/') || index.schemaVersion !== 2 || !Array.isArray(paths) || !paths.length
+                    || paths.some(relative => !published.has(relative))) {
+                    throw new Error('Missing canonical asset file publication for import');
+                }
+            }
+        }
+        const prepared = await mapWithConcurrency(entries.filter(entry => !fileAssets.has(entry.key) && !Object.hasOwn(archivedAssets, entry.key)), objectWriteConcurrency, async entry => {
+            const result = entry.sourcePath
+                ? await prepareFileEntriesAsync([entry]) : await prepareEntriesAsync([entry]);
+            return result[0];
+        });
+        const next = options.prefixes ? { ...manifest.entries } : {};
+        for (const key of Object.keys(next)) {
+            if (options.prefixes.some(prefix => key.startsWith(prefix))) delete next[key];
+        }
+        for (const key of fileAssets) delete next[key];
+        for (const key of Object.keys(archivedAssets)) delete next[key];
+        for (const [key, entry] of prepared) next[key] = entry;
+        const updated = { schemaVersion: 1, updatedAt: Date.now(), entries: next };
+        // Pin the old manifest before publishing anything. GC honours these
+        // recovery manifests, so rollback assets survive subsequent saves.
+        commitTransaction(dataRoot, [
+            { path: `trash/${options.importId}/kv-manifest.json`, data: Buffer.from(JSON.stringify(manifest)) },
+            ...options.operations,
+            { path: MANIFEST_PATH, data: Buffer.from(JSON.stringify(updated)) },
+        ], options.transactionOptions);
+        manifest = updated;
+        ownedCache = null;
     }
 
     function kvDelMany(keys) {
         let count = 0;
         let bytes = 0;
+        const currentOwned = [...keys].some(key => key.startsWith('assets/')) ? strictOwnedIndex() : { schemaVersion: 2, entries: {} };
+        let nextOwned;
+        const nextEntries = { ...manifest.entries };
+        const operations = [];
+        const archive = `trash/asset-delete-${crypto.randomUUID()}`;
         for (const key of new Set(keys)) {
             const entry = manifest.entries[key];
-            if (!entry) continue;
-            bytes += entry.size ?? 0;
-            delete manifest.entries[key];
+            const owned = currentOwned.entries[key];
+            if (!entry && !owned) continue;
+            bytes += kvSize(key);
+            delete nextEntries[key];
+            if (owned) {
+                nextOwned ||= structuredClone(currentOwned);
+                delete nextOwned.entries[key];
+                for (const relative of owned.paths) {
+                    for (const suffix of ['', '.sha256', '.bak', '.bak.sha256']) {
+                        if (!fs.existsSync(path.join(dataRoot, relative + suffix))) continue;
+                        operations.push({ path: relative + suffix, archiveTo: `${archive}/${relative}${suffix}` });
+                    }
+                }
+            }
             count += 1;
         }
-        if (count > 0) saveManifest();
+        if (count > 0) {
+            const nextManifest = { schemaVersion: 1, updatedAt: Date.now(), entries: nextEntries };
+            if (nextOwned) {
+                operations.push({ path: `${archive}/asset-files.json`, data: Buffer.from(JSON.stringify(currentOwned)) },
+                    { path: ASSET_INDEX_PATH, data: Buffer.from(JSON.stringify(nextOwned)) },
+                    { path: MANIFEST_PATH, data: Buffer.from(JSON.stringify(nextManifest)) });
+                commitTransaction(dataRoot, operations);
+                ownedCache = null;
+                manifest = nextManifest;
+            } else {
+                manifest = nextManifest;
+                saveManifest();
+            }
+        }
         return { count, bytes };
     }
 
     function kvSize(key) {
+        const source = key.startsWith('assets/') && ownedIndex().entries[key] ? getOwnedAssetSource(dataRoot, key, ownedIndex()) : null;
+        if (source) return fs.statSync(source).size;
         return manifest.entries[key]?.size ?? 0;
     }
 
     function kvGetUpdatedAt(key) {
+        const source = key.startsWith('assets/') && ownedIndex().entries[key] ? getOwnedAssetSource(dataRoot, key, ownedIndex()) : null;
+        if (source) {
+            const stat = fs.statSync(source, { bigint: true });
+            return `${stat.mtimeNs}-${stat.size}`;
+        }
         return manifest.entries[key]?.updatedAt ?? null;
     }
 
     function kvCopyValue(source, destination) {
+        if (source.startsWith('assets/') || destination.startsWith('assets/')) {
+            const value = kvGet(source);
+            if (value !== null) kvSet(destination, value);
+            return;
+        }
         const entry = manifest.entries[source];
         if (!entry) return;
         manifest.entries[destination] = { ...entry, updatedAt: Date.now() };
@@ -283,26 +495,43 @@ function createFileKv(options = {}) {
     }
 
     function kvDelPrefix(prefix) {
-        let changed = false;
-        for (const key of Object.keys(manifest.entries)) {
-            if (key.startsWith(prefix)) {
-                delete manifest.entries[key];
-                changed = true;
-            }
-        }
-        if (changed) saveManifest();
+        kvDelMany(kvList(prefix));
     }
 
     function kvList(prefix = '') {
-        return Object.keys(manifest.entries).filter(key => key.startsWith(prefix)).sort();
+        const assets = 'assets/'.startsWith(prefix) || prefix.startsWith('assets/') ? Object.keys(ownedIndex().entries) : [];
+        return [...new Set([...Object.keys(manifest.entries), ...assets])].filter(key => key.startsWith(prefix)).sort();
     }
 
     function kvListWithSizes(prefix = '') {
-        return kvList(prefix).map(key => ({ key, size: manifest.entries[key].size }));
+        return kvList(prefix).map(key => ({ key, size: kvSize(key) }));
+    }
+
+    function archivedObjects() {
+        const objects = new Set();
+        const trash = path.join(dataRoot, 'trash');
+        if (fs.existsSync(trash)) {
+            for (const entry of fs.readdirSync(trash, { withFileTypes: true })) {
+                if (!entry.isDirectory() || !entry.name.startsWith('import-')) continue;
+                const relative = path.join('trash', entry.name, 'kv-manifest.json');
+                if (!fs.existsSync(path.join(dataRoot, relative))) continue;
+                const previous = readVerifiedJson(dataRoot, relative);
+                for (const value of Object.values(previous.entries)) objects.add(value.object);
+            }
+        }
+        return objects;
     }
 
     function referencedObjects() {
-        return new Set(Object.values(manifest.entries).map(entry => entry.object));
+        return new Set([...Object.values(manifest.entries).map(entry => entry.object), ...archivedObjects()]);
+    }
+
+    function kvListRecoveryObjects() {
+        return [...archivedObjects()].map(object => {
+            if (!/^[a-f0-9]{64}$/.test(object)) throw new Error('Invalid recovery object hash');
+            const sourcePath = path.join(dataRoot, 'kv/objects', object);
+            return { object, sourcePath, size: fs.statSync(sourcePath).size };
+        });
     }
 
     function reclaimableObjects() {
@@ -382,6 +611,7 @@ function createFileKv(options = {}) {
 
     return {
         kvGet,
+        kvGetSourcePath,
         kvSet,
         kvSetMany,
         kvSetManyAsync,
@@ -390,6 +620,9 @@ function createFileKv(options = {}) {
         kvReplacePrefixesFromFilesAsync,
         kvReplaceAll,
         kvReplaceAllAsync,
+        kvPublishImportAsync,
+        kvDetachOwnedAssets,
+        kvListRecoveryObjects,
         kvDel,
         kvDelMany,
         kvSize,

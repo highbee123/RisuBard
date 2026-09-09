@@ -71,7 +71,7 @@ describe('character cold storage migration', () => {
     expect(coldChar!.firstMessages[0]).toBe('Hello from cold storage!')
   })
 
-  test('promotes failed cold storage character to blank with recovery info', async () => {
+  test('rejects missing cold storage without replacing existing characters with blanks', async () => {
     const srv = await spawnServer()
     servers.push(srv)
     const client = await createClient(srv.port, srv.password)
@@ -84,29 +84,12 @@ describe('character cold storage migration', () => {
       ],
     })
 
+    expect((await client.importBackup(createSeedBackup({ characterCount: 2 }))).ok).toBe(true)
+    const before = normalizeBackup(await client.exportBackup()).raw
     const result = await client.importBackup(seed)
-    expect(result.ok).toBe(true)
-    expect(result.coldStorageFailed).toBe(1)
-
-    // Export and verify the character was promoted to blank (not deleted)
-    const exportBin = await client.exportBackup()
-    const { raw } = normalizeBackup(exportBin)
-    const chars = raw.characters as any[]
-
-    const brokenChar = chars.find((c: any) => c.chaId === 'cold-char-missing-key')
-    expect(brokenChar).toBeDefined()
-    expect(brokenChar.name).toBe('BrokenChar')
-    // coldstorage field should be gone
-    expect(brokenChar.coldstorage).toBeUndefined()
-    // desc should contain recovery key
-    expect(brokenChar.desc).toContain('missing-key')
-    expect(brokenChar.desc).toContain('Cold storage restore failed')
-    // firstMsgIndex should be -1 (safe default)
-    expect(brokenChar.firstMsgIndex).toBe(-1)
-    // Should have valid structure (not crash-prone stub)
-    expect(Array.isArray(brokenChar.globalLore)).toBe(true)
-    expect(Array.isArray(brokenChar.bias)).toBe(true)
-    expect(Array.isArray(brokenChar.emotionImages)).toBe(true)
+    expect(result.ok).not.toBe(true)
+    expect(result.error).toMatch(/cold storage/i)
+    expect(normalizeBackup(await client.exportBackup()).raw).toEqual(before)
   })
 
   test('cold storage round-trip: import → export preserves cold storage KV entries', async () => {

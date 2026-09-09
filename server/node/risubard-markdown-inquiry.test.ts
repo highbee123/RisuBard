@@ -281,6 +281,54 @@ describe('progressive Markdown inquiry', () => {
         ])
         expect(result.metrics.semanticCandidateCount).toBe(1)
         expect(result.metrics.auxiliaryModelCalls).toBe(0)
+        expect(result.rerankCandidates).toEqual([expect.objectContaining({
+            documentId: 'moon-seal',
+            type: 'event',
+            title: '월광 의식',
+            excerpt: expect.stringContaining('은빛 구체'),
+            score: expect.any(Number),
+        })])
+        expect(Object.keys(result.rerankCandidates[0] ?? {}).sort()).toEqual([
+            'documentId', 'excerpt', 'score', 'title', 'type',
+        ])
+    })
+
+    test('bounds Bard-chan candidate cards independently of the result set', () => {
+        const result = inquireMarkdownDocuments({
+            currentInput: '청동나비 봉인문 기록',
+            documents: Array.from({ length: 20 }, (_, index) => document({
+                id: `seal-${index}`,
+                type: 'event',
+                title: `청동나비 봉인문 ${index}`,
+                relativePath: `events/seal-${index}.md`,
+                content: `# 청동나비 봉인문 ${index}\n\n${'긴 기록 '.repeat(200)}`,
+            })),
+        })
+
+        expect(result.rerankCandidates).toHaveLength(12)
+        expect(result.rerankCandidates.every((candidate) =>
+            candidate.excerpt.length <= 320)).toBe(true)
+    })
+
+    test('keeps required context outside Bard-chan candidate cards', () => {
+        const result = inquireMarkdownDocuments({
+            currentInput: '청동나비 봉인문 기록',
+            documents: [
+                document({
+                    id: 'current-scene', type: 'scene', title: '현재 장면',
+                    relativePath: 'current-scene.md', contextMode: 'always',
+                    content: '# 현재 장면\n\n정원에 있다.',
+                }),
+                document({
+                    id: 'old-seal', type: 'event', title: '청동나비 봉인문',
+                    relativePath: 'events/old-seal.md',
+                    content: '# 청동나비 봉인문\n\n술집에서 발견한 기록이다.',
+                }),
+            ],
+        })
+
+        expect(result.rerankCandidates.map((candidate) =>
+            candidate.documentId)).toEqual(['old-seal'])
     })
 
     test('recalls original source evidence through a linked story route', () => {

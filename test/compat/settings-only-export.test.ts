@@ -53,9 +53,8 @@ const NAI_REF_IMAGE = 'nai-ref-ggg.png'
 const USER_ICON = 'user-icon-hhh.png'
 /**
  * Referenced by both a module's asset list and a persona's icon. Excluding
- * module assets must not drop it — the exclusion is computed as a set
- * difference against everything reachable *without* modules, so anything with a
- * second owner stays.
+ * module assets must keep the persona's independent copy. Canonical migration
+ * assigns separate logical keys to the two owners while preserving both bytes.
  */
 const SHARED_ASSET = 'shared-asset-jjj.png'
 
@@ -66,12 +65,6 @@ const SETTINGS_ASSETS = [
 ]
 /** Assets that must NOT survive it. */
 const CHARACTER_ASSETS = [CHAR_IMAGE, CHAR_EMOTION]
-/** Assets dropped when module assets are excluded. */
-const MODULE_ONLY_ASSETS = [MODULE_ASSET]
-/** Assets that survive even with module assets excluded. */
-const NON_MODULE_ASSETS = [
-  PERSONA_ICON, BACKGROUND, SOUND, MODULE_ICON, NAI_REF_IMAGE, USER_ICON, SHARED_ASSET,
-]
 
 const COLD_KEY = '11111111-2222-3333-4444-555555555555'
 
@@ -213,6 +206,35 @@ async function exportSettingsOnly(
   }
 }
 
+function expectedSettingsAssets(raw: Record<string, unknown>, includeModuleAssets = true) {
+  const db = raw as any
+  const references: [string, string][] = [
+    [db.personas[0].icon, PERSONA_ICON], [db.personas[1].icon, SHARED_ASSET],
+    [db.userIcon, USER_ICON], [db.customBackground, BACKGROUND],
+    [db.messageSound, SOUND], [db.customSounds[0].path, SOUND],
+    [db.modules[0].icon, MODULE_ICON], [db.NAIImgConfig.image, NAI_REF_IMAGE],
+    ...(includeModuleAssets ? [[db.modules[0].assets[0][1], MODULE_ASSET], [db.modules[0].assets[1][1], SHARED_ASSET]] as [string, string][] : []),
+  ]
+  expect(db.personas[1].icon).not.toBe(db.modules[0].assets[1][1])
+  const result = new Map<string, Buffer>()
+  for (const [key, original] of references) {
+    expect(key).toMatch(/^assets\//)
+    result.set(key.slice('assets/'.length), Buffer.from(`fake-bytes-for-${original}`))
+  }
+  return result
+}
+
+function assertSettingsAssetBytes(bin: Buffer, includeModuleAssets = true, exactEntries = true) {
+  const { raw } = normalizeBackup(bin)
+  const entries = new Map(decodeBackup(bin).map(entry => [entry.name, entry.data]))
+  const expected = expectedSettingsAssets(raw, includeModuleAssets)
+  for (const [name, bytes] of expected) {
+    expect(entries.get(name), `exported settings reference ${name} resolves to its original bytes`).toEqual(bytes)
+  }
+  if (exactEntries) expect([...entries.keys()].filter(name => name !== 'database.risudat').sort()).toEqual([...expected.keys()].sort())
+  return { raw, entries, expected }
+}
+
 describe('settings-only export', () => {
   test('drops characters, chats and characterOrder while keeping settings', async () => {
     const client = await seededServer()
@@ -248,11 +270,8 @@ describe('settings-only export', () => {
   test('keeps every settings-level asset and drops character art', async () => {
     const client = await seededServer()
     const { bin } = await exportSettingsOnly(client)
-    const names = decodeBackup(bin).map(e => e.name)
-
-    for (const asset of SETTINGS_ASSETS) {
-      expect(names, `settings asset ${asset} must survive`).toContain(asset)
-    }
+    const { entries } = assertSettingsAssetBytes(bin)
+    const names = [...entries.keys()]
     for (const asset of CHARACTER_ASSETS) {
       expect(names, `character asset ${asset} must be dropped`).not.toContain(asset)
     }
@@ -339,26 +358,24 @@ describe('settings-only without module assets', () => {
   test('drops module-owned assets but keeps everything else', async () => {
     const client = await seededServer()
     const { bin } = await exportSettingsOnly(client, { moduleAssets: false })
-    const names = decodeBackup(bin).map(e => e.name)
-
-    for (const asset of MODULE_ONLY_ASSETS) {
-      expect(names, `module-only asset ${asset} must be dropped`).not.toContain(asset)
-    }
-    for (const asset of NON_MODULE_ASSETS) {
-      expect(names, `non-module asset ${asset} must survive`).toContain(asset)
+    const { raw, entries } = assertSettingsAssetBytes(bin, false)
+    const names = [...entries.keys()]
+    for (const asset of (raw.modules as any[])[0].assets) {
+      expect(names, `module-only reference ${asset[1]} must be dropped`).not.toContain(asset[1].slice('assets/'.length))
     }
     for (const asset of CHARACTER_ASSETS) {
       expect(names, `character asset ${asset} must be dropped`).not.toContain(asset)
     }
   })
 
-  // The exclusion is a set difference, not a per-reference filter. An asset a
-  // module happens to share with a persona icon has a second owner and must
-  // survive — dropping it would blank out the persona too.
-  test('keeps an asset a module shares with a persona icon', async () => {
+  test('keeps the independent persona image when the module copy is excluded', async () => {
     const client = await seededServer()
     const { bin } = await exportSettingsOnly(client, { moduleAssets: false })
-    expect(decodeBackup(bin).map(e => e.name)).toContain(SHARED_ASSET)
+    const { raw, entries } = assertSettingsAssetBytes(bin, false)
+    const personaKey = (raw.personas as any[])[1].icon.slice('assets/'.length)
+    const moduleKey = (raw.modules as any[])[0].assets[1][1].slice('assets/'.length)
+    expect(entries.get(personaKey)).toEqual(Buffer.from(`fake-bytes-for-${SHARED_ASSET}`))
+    expect(entries.has(moduleKey)).toBe(false)
   })
 
   test('module definitions still travel without their assets', async () => {
@@ -397,18 +414,25 @@ describe('settings-only estimate', () => {
       moduleAssets: { count: number, bytes: number, moduleCount: number }
     }
 
-    expect(est.baseAssets.count).toBe(NON_MODULE_ASSETS.length)
-    expect(est.moduleAssets.count).toBe(MODULE_ONLY_ASSETS.length)
     expect(est.moduleAssets.moduleCount).toBe(1)
     expect(est.dbBytes).toBeGreaterThan(0)
 
     // The estimated module-asset cost must equal the real difference between
     // the two exports, entry framing aside — that difference is the number the
     // user is shown when deciding.
-    const withAssets = (await exportSettingsOnly(client)).bin.length
-    const without = (await exportSettingsOnly(client, { moduleAssets: false })).bin.length
-    const framingPerEntry = 8 + MODULE_ASSET.length
-    expect(withAssets - without).toBe(est.moduleAssets.bytes + framingPerEntry)
+    const withAssets = (await exportSettingsOnly(client)).bin
+    const without = (await exportSettingsOnly(client, { moduleAssets: false })).bin
+    const full = assertSettingsAssetBytes(withAssets)
+    const base = assertSettingsAssetBytes(without, false)
+    const removed = [...full.expected].filter(([name]) => !base.expected.has(name))
+    expect(removed.map(([name]) => name).sort()).toEqual((full.raw.modules as any[])[0].assets.map((asset: any[]) => asset[1].slice('assets/'.length)).sort())
+    expect(est.baseAssets.count).toBe(base.expected.size)
+    expect(est.baseAssets.bytes).toBe([...base.expected.values()].reduce((sum, bytes) => sum + bytes.length, 0))
+    expect(est.moduleAssets.count).toBe(removed.length)
+    expect(est.moduleAssets.bytes).toBe(removed.reduce((sum, [, bytes]) => sum + bytes.length, 0))
+    expect(est.dbBytes).toBe(full.entries.get('database.risudat')!.length)
+    const framingBytes = removed.reduce((sum, [name]) => sum + 8 + Buffer.byteLength(name, 'utf8'), 0)
+    expect(withAssets.length - without.length).toBe(est.moduleAssets.bytes + framingBytes)
   })
 
   test('reports no module assets when there are none to weigh', async () => {
@@ -428,6 +452,24 @@ describe('settings-only estimate', () => {
 })
 
 describe('settings-only round-trip', () => {
+  test('requires the explicitly omitted module images to be backfilled before strict restore', async () => {
+    const source = await seededServer()
+    const { bin: partial } = await exportSettingsOnly(source, { moduleAssets: false })
+    const complete = assertSettingsAssetBytes((await exportSettingsOnly(source)).bin)
+    const target = await spawnServer(); servers.push(target)
+    const client = await createClient(target.port, target.password)
+    const rejected = await client.importBackup(partial)
+    expect(rejected.ok).not.toBe(true)
+    // This unique module image retains its legacy key, so the incompatibility
+    // is independent of the owner-specific key migration.
+    expect(rejected.error).toContain(`Missing referenced asset: assets/${MODULE_ASSET}`)
+    const entries = decodeBackup(partial)
+    const supplied = new Set(entries.map(entry => entry.name))
+    const missing = [...complete.expected].filter(([name]) => !supplied.has(name)).map(([name, data]) => ({ name, data }))
+    expect(missing).toHaveLength(2)
+    expect((await client.importBackup(encodeBackup([...entries, ...missing]))).ok).toBe(true)
+    assertSettingsAssetBytes(await client.exportBackup(), true, false)
+  })
   // The whole point: restore the seed onto a fresh instance and confirm it comes
   // up configured but empty. Import is the ordinary full-replace path — nothing
   // about settings-only touches it — so this guards that a trimmed DB is still
@@ -450,9 +492,6 @@ describe('settings-only round-trip', () => {
     expect((raw.personas as any[])[0].icon).toBe(`assets/${PERSONA_ICON}`)
 
     // Asset payloads have to land as real bytes, not just surviving references.
-    const names = decodeBackup(await targetClient.exportBackup()).map(e => e.name)
-    for (const asset of SETTINGS_ASSETS) {
-      expect(names, `settings asset ${asset} must survive the round-trip`).toContain(asset)
-    }
+    assertSettingsAssetBytes(await targetClient.exportBackup(), true, false)
   })
 })

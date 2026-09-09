@@ -40,7 +40,21 @@ vi.mock('../util', () => ({
     },
 }))
 
-import { CharXImporter } from './processzip'
+import { CharXImportDecodeScheduler, CharXImporter } from './processzip'
+
+describe('CharXImportDecodeScheduler', () => {
+    it('starts only the bounded number of archive decoders at once', () => {
+        const scheduler = new CharXImportDecodeScheduler(2)
+        const started: number[] = []
+        for (let index = 0; index < 5; index++) scheduler.enqueue(() => started.push(index))
+
+        expect(started).toEqual([0, 1])
+        scheduler.complete()
+        expect(started).toEqual([0, 1, 2])
+        scheduler.complete()
+        expect(started).toEqual([0, 1, 2, 3])
+    })
+})
 
 describe('CharXImporter asset persistence', () => {
     beforeEach(() => vi.clearAllMocks())
@@ -62,6 +76,33 @@ describe('CharXImporter asset persistence', () => {
         expect(mocks.setItems.mock.calls[0][0]).toHaveLength(51)
         expect(mocks.saveAsset).not.toHaveBeenCalled()
         expect(Object.keys(importer.assets)).toHaveLength(51)
+    })
+
+    it('reports reading, extraction, and per-asset preparation before batched storage completes', async () => {
+        const archiveEntries: Record<string, Uint8Array> = {
+            'card.json': new TextEncoder().encode('{}'),
+        }
+        for (let index = 0; index < 5; index++) {
+            archiveEntries[`assets/${index}.png`] = Uint8Array.of(index)
+        }
+        const archive = fflate.zipSync(archiveEntries, { level: 0 })
+        const progress: Array<{ phase: string; completed: number; total?: number }> = []
+        const importer = new CharXImporter((event: typeof progress[number]) => {
+            progress.push(event)
+        })
+
+        await importer.parse(archive)
+        await importer.done()
+
+        expect(progress.some((event) => event.phase === 'reading'
+            && event.completed === archive.byteLength
+            && event.total === archive.byteLength)).toBe(true)
+        expect(progress.some((event) => event.phase === 'extracting'
+            && event.completed === 6)).toBe(true)
+        expect(progress.filter((event) => event.phase === 'preparing-assets')
+            .map((event) => event.completed)).toEqual([1, 2, 3, 4, 5])
+        expect(progress.some((event) => event.phase === 'saving-assets'
+            && event.completed === 5)).toBe(true)
     })
 
     it('finishes archives with hundreds of compressed metadata entries', async () => {

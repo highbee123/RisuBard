@@ -21,6 +21,18 @@ let app = mount(App, {
 });
 loadData()
 initHotkey()
-document.getElementById('preloading').remove()
+
+async function handoffStartupLogo() {
+    const preloader = document.getElementById('preloading')
+    const appLogo = document.querySelector<HTMLImageElement>(
+        '[data-startup-logo="app"]'
+    )
+    if (appLogo) {
+        try { await appLogo.decode() } catch {}
+    }
+    preloader?.remove()
+}
+
+void handoffStartupLogo()
 
 export default app;

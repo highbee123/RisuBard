@@ -121,7 +121,6 @@ describe('settings navigation registry', () => {
             items: section.items.map((item) => item.id),
         }))).toEqual([
             { id: 'experience', items: ['experience-settings', 'hotkeys'] },
-            { id: 'system', items: ['migration'] },
         ])
     })
 

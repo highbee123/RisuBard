@@ -1,7 +1,6 @@
 import { AppendableBuffer, saveAsset, type LocalWriter, type VirtualWriter } from "../globalApi.svelte";
 import * as fflate from "fflate";
 import { asBuffer, sleep } from "../util";
-import { alertStore } from "../alert";
 import { hasher } from "../parser/parser.svelte";
 import { hubURL } from "../characterCards";
 import { AssetImportBatcher } from "../storage/assetImportBatcher";
@@ -9,10 +8,46 @@ import { AssetImportBatcher } from "../storage/assetImportBatcher";
 // File size and chunk size constants
 const MAX_ASSET_SIZE_BYTES = 50 * 1024 * 1024; // 50MB
 const CHUNK_SIZE_BYTES = 1024 * 1024; // 1MB
+const MAX_CONCURRENT_DECODERS = 4;
+
+export interface CharXImportProgress {
+    phase: 'reading' | 'scanning' | 'extracting'
+        | 'preparing-assets' | 'saving-assets' | 'finalizing'
+    completed: number
+    total?: number
+}
 
 // HTTP status code ranges
 const HTTP_STATUS_OK_MIN = 200;
 const HTTP_STATUS_OK_MAX = 300;
+
+export class CharXImportDecodeScheduler {
+    private active = 0
+    private readonly pending: Array<() => void> = []
+
+    constructor(private readonly limit: number = MAX_CONCURRENT_DECODERS) {
+        if (!Number.isInteger(limit) || limit < 1) throw new Error('Decoder concurrency must be positive')
+    }
+
+    enqueue(start: () => void) {
+        this.pending.push(start)
+        this.startAvailable()
+    }
+
+    complete() {
+        if (this.active > 0) this.active -= 1
+        this.startAvailable()
+    }
+
+    private startAvailable() {
+        while (this.active < this.limit && this.pending.length > 0) {
+            const start = this.pending.shift()
+            if (!start) return
+            this.active += 1
+            start()
+        }
+    }
+}
 
 export async function processZip(dataArray: Uint8Array): Promise<string> {
     const unzipped = await new Promise<fflate.Unzipped>((resolve, reject) => {
@@ -165,11 +200,13 @@ export class CharXImporter{
     private completionPromise?: Promise<void>
     private completionSettled: boolean = false
     private errors: Error[] = []
-    private onProgress?: (done: number, total: number) => void
+    private discoveredEntries = 0
+    private extractedEntries = 0
     private openFiles: number = 0
     private inputFinalized: boolean = false
     private finalizationStarted: boolean = false
     private assetBatcher: AssetImportBatcher
+    private decodeScheduler = new CharXImportDecodeScheduler()
 
     // Results: filename -> saved asset ID mapping
     assets:{[key:string]:string} = {}
@@ -187,31 +224,26 @@ export class CharXImporter{
     moduleData:Uint8Array|undefined
 
     // Configuration
-    alertInfo:boolean = false  // Show progress alerts to user
     skipSaving: boolean = false  // If true, only compute hashes without saving
     hashSignal: string|undefined  // Hash to signal server for sync (when skipSaving is false)
 
-    constructor(){
+    constructor(private readonly onProgress?: (progress: CharXImportProgress) => void){
         this.unzip = new fflate.Unzip()
-        // AsyncUnzipInflate creates a worker per compressed entry. Module
-        // archives can contain hundreds of x_meta files, exhausting the
-        // browser worker pool and leaving import completion unresolved.
-        this.unzip.register(fflate.UnzipInflate)
+        // Large compressed entries are decoded off the UI thread. File starts
+        // are bounded below so large cards cannot create hundreds of workers.
+        this.unzip.register(fflate.AsyncUnzipInflate)
         this.unzip.onfile = (file) => this.#handleFile(file)
 
-        this.onProgress = (done, total) => {
-            if(this.alertInfo){
-                alertStore.set({
-                    type: 'wait',
-                    msg: `Loading... (Saving Assets ${done}/${total})`
-                })
-            }
-        }
         this.assetBatcher = new AssetImportBatcher({
             onStored: (id, storageKey) => {
                 this.assets[id] = storageKey
             },
-            onProgress: (done, total) => this.onProgress?.(done, total),
+            onPrepared: (completed, total) => this.onProgress?.({
+                phase: 'preparing-assets', completed, total,
+            }),
+            onProgress: (completed, total) => this.onProgress?.({
+                phase: 'saving-assets', completed, total,
+            }),
             shouldPersist: () => !this.skipSaving,
         })
     }
@@ -243,11 +275,21 @@ export class CharXImporter{
 
         // Convert all input types to ReadableStream for uniform processing
         const stream = this.#toStream(data)
+        const totalBytes = data instanceof Uint8Array
+            ? data.byteLength
+            : data instanceof File ? data.size : undefined
+        let completedBytes = 0
+        this.onProgress?.({ phase: 'reading', completed: 0, total: totalBytes })
 
         const reader = stream.getReader()
         while(true){
             const {done, value} = await reader.read()
             if(value){
+                completedBytes += value.byteLength
+                this.onProgress?.({
+                    phase: 'reading', completed: completedBytes,
+                    total: totalBytes,
+                })
                 await this.#feedChunk(value, false)
             }
             if(done){
@@ -325,14 +367,35 @@ export class CharXImporter{
      */
     #handleFile(file: fflate.UnzipFile) {
         const assetIndex = file.name
+        this.discoveredEntries += 1
+        this.onProgress?.({
+            phase: 'scanning',
+            completed: this.discoveredEntries,
+        })
         // Only process files smaller than MAX_ASSET_SIZE_BYTES (50MB)
         if((file.originalSize ?? 0) < MAX_ASSET_SIZE_BYTES){
             this.assetBuffers[assetIndex] = new AppendableBuffer()
             this.openFiles += 1
             file.ondata = (error, dat, final) => this.#handleFileData(assetIndex, error, dat, final)
-            file.start()
+            this.decodeScheduler.enqueue(() => file.start())
         } else {
             this.excludedFiles.push(assetIndex)
+            this.openFiles += 1
+            file.ondata = (error, _data, final) => {
+                if(error) this.errors.push(error)
+                if(error || final){
+                    this.extractedEntries += 1
+                    this.onProgress?.({
+                        phase: 'extracting',
+                        completed: this.extractedEntries,
+                        total: this.discoveredEntries,
+                    })
+                    this.openFiles -= 1
+                    this.decodeScheduler.complete()
+                    this.#tryFinalize()
+                }
+            }
+            this.decodeScheduler.enqueue(() => file.start())
         }
     }
 
@@ -345,13 +408,21 @@ export class CharXImporter{
             this.errors.push(error)
             delete this.assetBuffers[fileName]
             this.openFiles -= 1
+            this.decodeScheduler.complete()
             this.#tryFinalize()
             return
         }
         this.assetBuffers[fileName].append(data)
         if(final){
             this.#handleFileComplete(fileName)
+            this.extractedEntries += 1
+            this.onProgress?.({
+                phase: 'extracting',
+                completed: this.extractedEntries,
+                total: this.discoveredEntries,
+            })
             this.openFiles -= 1
+            this.decodeScheduler.complete()
             this.#tryFinalize()
         }
     }
@@ -395,6 +466,11 @@ export class CharXImporter{
     async #finalize(){
         try {
             await this.assetBatcher.done()
+            this.onProgress?.({
+                phase: 'finalizing',
+                completed: this.extractedEntries,
+                total: this.discoveredEntries,
+            })
             if(this.hashSignal){
                 await saveAsset(new TextEncoder().encode(this.hashSignal))
             }

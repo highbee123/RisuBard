@@ -1,4 +1,6 @@
 import { get } from "svelte/store";
+import { ensureCharacterReady, ensureActiveModulesReady } from '../storage/nativeRuntime';
+import { ensureChatHydrated } from '../storage/chatStorage';
 import { type character, type MessageGenerationInfo, type Chat, type MessagePresetInfo, changeToPreset, setCurrentChat, type Message, normalizeChat, type StreamingDisplayOptimizationMode } from "../storage/database.svelte";
 import { DBState } from '../stores.svelte';
 import { CharEmotion, selectedCharID } from "../stores.svelte";
@@ -91,6 +93,7 @@ import {
     findHistoricalSourceMatches,
     resolveHistoricalSourceMatchesById,
 } from '../risubard/historicalSourceRecall';
+import { rerankWithBardChan } from '../risubard/bardChanReranker';
 import { normalizeArcPlotterRuntimeSettings } from '../risubard/arcPlotterSettings';
 import {
     canonicalTurnNeedsRetry,
@@ -244,6 +247,9 @@ async function confirmProjectedNarrativeTurn(input: {
                 input.chatId
             )
             : undefined
+        const confirmedMessages = settings.risuBardAnalysisExcludeUserMessages
+            ? input.messages.filter((message) => message.role !== 'user')
+            : [...input.messages]
         const contextMessages = chat
             ? projectRecentMemoryMessages(
                 chat.message,
@@ -251,14 +257,15 @@ async function confirmProjectedNarrativeTurn(input: {
                     settings.risuBardRecentMessageCount
                 ),
                 input.targetMessageId,
-                firstMessageEvidence
+                firstMessageEvidence,
+                !settings.risuBardAnalysisExcludeUserMessages
             )
-            : [...input.messages]
+            : confirmedMessages
         const receipt = await storedResponseMemoryAnalysis.confirm({
             characterId: input.characterId,
             chatId: input.chatId,
             messages: projectMemoryAnalysisEvidence(
-                input.messages,
+                confirmedMessages,
                 contextMessages,
                 firstMessageEvidence
             ),
@@ -601,14 +608,19 @@ async function runWikiReboot(
                     settings.risuBardRecentMessageCount
                 ),
                 batch.at(-1)?.assistantMessageId,
-                firstMessageEvidence
+                firstMessageEvidence,
+                !settings.risuBardAnalysisExcludeUserMessages
             )
             const receipt = await storedResponseMemoryAnalysis.confirm({
                 characterId: character.chaId,
                 chatId: job.stagingChatId,
                 modelSessionChatId: chatId,
                 messages: projectMemoryAnalysisEvidence(
-                    projected.messages,
+                    settings.risuBardAnalysisExcludeUserMessages
+                        ? projected.messages.filter((message) =>
+                            message.role !== 'user'
+                        )
+                        : projected.messages,
                     contextMessages,
                     firstMessageEvidence
                 ),
@@ -811,6 +823,7 @@ export async function executeCurrentNarrativeWikiCommand(
                 chat,
                 chatId
             ),
+            !settings.risuBardAnalysisExcludeUserMessages,
         )
         if (currentMessages.length === 0) {
             throw new Error('현재 메시지를 위키 명령 자료로 준비할 수 없습니다.')
@@ -1065,7 +1078,14 @@ export async function sendChat(chatProcessIndex = -1,arg:{
         return false
     }
 
-    const selected = DBState.db.characters[get(selectedCharID)]
+    let selected = DBState.db.characters[get(selectedCharID)]
+    if (selected?.chaId) {
+        await ensureCharacterReady(selected.chaId)
+        const ready = DBState.db.characters.find(char => char.chaId === selected.chaId)
+        if (ready?.chats?.[ready.chatPage]?._placeholder && !await ensureChatHydrated(ready.chats, ready.chatPage, ready.chaId)) return false
+        await ensureActiveModulesReady()
+        selected = ready
+    }
     const selectedConversation = selected?.chats[selected.chatPage]
     if (selectedConversation?.risuBardWikiReboot) return false
 
@@ -1524,7 +1544,10 @@ export async function sendChat(chatProcessIndex = -1,arg:{
                 const inquiryStartedAt = performance.now()
                 try {
                     const inquirySettings = resolvedRisuBardSettings(currentChat)
-                    const inquiry = await loadNarrativeInquiry({
+                    const loadInquiry = (semanticMatches?: readonly {
+                        documentId: string
+                        score: number
+                    }[]) => loadNarrativeInquiry({
                         characterId: currentChar.chaId,
                         chatId: narrativeSessionChatId,
                         currentInput,
@@ -1567,7 +1590,30 @@ export async function sendChat(chatProcessIndex = -1,arg:{
                         fetchImpl: fetch,
                         createAuth: () => forageStorage.createAuth(),
                         timeoutMs: inquirySettings.risuBardInquiryTimeoutMs,
+                        ...(semanticMatches ? { semanticMatches } : {}),
                     })
+                    const initialInquiry = await loadInquiry()
+                    const semanticMatches = await rerankWithBardChan({
+                        enabled: inquirySettings.risuBardBardChanEnabled,
+                        modelMode: inquirySettings.risuBardBardChanModelMode,
+                        currentInput,
+                        candidates: initialInquiry.rerankCandidates,
+                        realChatId: narrativeSessionChatId,
+                        requestModel: (request, mode) =>
+                            requestChatData(request, mode),
+                    })
+                    const rerankedInquiry = semanticMatches.length > 0
+                        ? await loadInquiry(semanticMatches)
+                        : undefined
+                    const inquiry = rerankedInquiry
+                        ? {
+                            ...rerankedInquiry,
+                            metrics: {
+                                ...rerankedInquiry.metrics,
+                                auxiliaryModelCalls: 1,
+                            },
+                        }
+                        : initialInquiry
                     sources = inquiry.sources
                     narrativeContextObservation.promptMode = inquiry.mode
                     narrativeContextObservation.graphRevision =

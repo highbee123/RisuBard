@@ -65,7 +65,8 @@ import {
     normalizeArcPlotterSettings,
     type ArcPlotterPreset,
 } from '../risubard/arcPlotterSettings';
-import { normalizeSelectedPersonaIndex } from '../personaScopes';
+import { getNewChatPersonaBinding, normalizeSelectedPersonaIndex } from '../personaScopes';
+import { isNativeRuntime, isCharacterReady } from './nativeRuntime';
 import {
     normalizeArcaChatFontSizePx,
     normalizeArcaChatDialogSize,
@@ -600,7 +601,7 @@ export function setDatabase(data:Database){
     data.enabledModules ??= []
     data.personaEnabledModules = normalizePersonaEnabledModules(
         data.personaEnabledModules,
-        allPersonas,
+        isNativeRuntime() ? [...allPersonas, ...Object.keys(data.personaEnabledModules ?? {}).map(id => ({ id }))] : allPersonas,
         data.modules.map((module) => module.id),
     )
     data.collectionOrganizers = normalizeCollectionOrganizers(data.collectionOrganizers, {
@@ -875,6 +876,12 @@ export function setDatabase(data:Database){
         typeof data.risuBardAutoWikiEnabled === 'boolean'
             ? data.risuBardAutoWikiEnabled
             : true
+    data.risuBardBardChanEnabled =
+        typeof data.risuBardBardChanEnabled === 'boolean'
+            ? data.risuBardBardChanEnabled
+            : false
+    data.risuBardBardChanModelMode =
+        data.risuBardBardChanModelMode === 'model' ? 'model' : 'memory'
     data.risuBardWikiMarkdownPreview =
         typeof data.risuBardWikiMarkdownPreview === 'boolean'
             ? data.risuBardWikiMarkdownPreview
@@ -919,6 +926,8 @@ export function setDatabase(data:Database){
         typeof data.risuBardResponseExcludeUserMessages === 'boolean'
             ? data.risuBardResponseExcludeUserMessages
             : data.risuBardResponseIncludeUserMessages === false
+    data.risuBardAnalysisExcludeUserMessages =
+        data.risuBardAnalysisExcludeUserMessages === true
     delete (data as { risuBardCanonicalMode?: unknown })
         .risuBardCanonicalMode
     data.risuBardAnalysisTokenLimit = normalizeRisuBardAnalysisTokenLimit(
@@ -989,6 +998,7 @@ export function setDatabase(data:Database){
     data.risuBardWikiPromptPresets = wikiPromptState.presets
     data.risuBardChatWikiPromptPresetId = wikiPromptState.chatPresetId
     for(const char of data.characters){
+        if (!isCharacterReady(char.chaId)) continue
         if(char.bardLore){
             const normalizedBardLore = normalizeBardLoreOwnerState(
                 char.bardLore,
@@ -1015,7 +1025,7 @@ export function setDatabase(data:Database){
             if(chat) ensureStableLorebookOwnerId(chat, uuidv4)
             // Stubs (lazy-loaded chats) carry no streaming flags; skip them so
             // we don't graft chat-only fields onto stub objects.
-            if(!chat || isChatStub(chat)){
+            if(!chat || isChatStub(chat) || chat._placeholder){
                 continue
             }
             normalizeChat(chat)
@@ -1090,19 +1100,21 @@ export function setCurrentChat(chat:Chat){
 }
 
 /**
- * Defaults seeded into a freshly created (empty) chat. The model-mode fields make the
- * "default model mode for new chats" preference (useModelPresetByDefault)
- * apply AT BIRTH — a snapshot, not a runtime fallback. A runtime fallback
- * would retroactively flip every existing chat that never chose a mode, and
- * couple un-opened chats live to db.defaultModelBinding. Snapshotting here keeps
- * each chat independent. Returns {} when the default is legacy (leave the field
- * absent → classic), so existing chats are unaffected. Spread into new Chat
- * literals. Do NOT call for hydration placeholders or chats being restored with
- * their own mode.
+ * Defaults seeded into a freshly created (empty) chat. Persona selection inherits
+ * the previous chat when supplied, otherwise it snapshots the selected global
+ * persona. Model-mode fields similarly apply AT BIRTH instead of coupling existing
+ * chats to later global changes. Spread into new Chat literals. Do NOT call for
+ * hydration placeholders or chats being restored with their own state.
  */
-export function newChatModelDefaults(): Partial<Pick<Chat, 'useModelPreset' | 'modelBinding' | 'supaMemory'>> {
+export function newChatModelDefaults(
+    character?: character | null,
+    previousChat?: Pick<Chat, 'bindedPersona'> | null,
+): Partial<Pick<Chat, 'useModelPreset' | 'modelBinding' | 'supaMemory' | 'bindedPersona'>> {
     const db = getDatabase()
-    const defaults = { supaMemory: false }
+    const defaults = {
+        supaMemory: false,
+        bindedPersona: getNewChatPersonaBinding(db, character, previousChat),
+    }
     if (!db.useModelPresetByDefault) return defaults
     const def = db.defaultModelBinding
     return {
@@ -1714,11 +1726,14 @@ export interface Database{
     }>
     risuBardModelMode?: 'memory' | 'model'
     risuBardAutoWikiEnabled?: boolean
+    risuBardBardChanEnabled?: boolean
+    risuBardBardChanModelMode?: 'memory' | 'model'
     risuBardWikiMarkdownPreview?: boolean
     risuBardRecentMessageCount?: number
     risuBardResponseMessageCount?: number
     risuBardResponseIncludeUserMessages?: boolean
     risuBardResponseExcludeUserMessages?: boolean
+    risuBardAnalysisExcludeUserMessages?: boolean
     risuBardAnalysisTokenLimit?: number
     risuBardAdditionalSearchLimit?: number
     risuBardCanonicalTargetLimit?: number

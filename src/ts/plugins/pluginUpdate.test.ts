@@ -31,7 +31,7 @@ describe('plugin updater', () => {
         const saveSource = fs.readFileSync('src/ts/globalApi.svelte.ts', 'utf8')
         expect(importerSource).toContain('await requestImmediateSave({ flushServer: true, rejectOnFailure: true })')
         expect(importerSource).not.toContain('await requestImmediateSave({ forceFullWrite: true, rejectOnFailure: true })')
-        expect(saveSource).toContain('if (options?.flushServer && supportsPatchSync)')
+        expect(saveSource).toContain('if (options?.flushServer && supportsPatchSync && !isNativeRuntime())')
         expect(saveSource).toContain('await flushServerDbNow()')
         expect(importerSource).toMatch(/catch \(error\) \{[\s\S]*?if \(argu\.isUpdate\) throw error/)
     })

@@ -5,13 +5,16 @@ const server = readFileSync(new URL('./server.cjs', import.meta.url), 'utf8')
 
 describe('data import parallelism connections', () => {
     it('publishes backup and save-folder objects through asynchronous atomic KV replacement', () => {
-        expect(server).toContain('await kvReplacePrefixesFromFilesAsync(stagedKvEntries')
-        expect(server).toContain('await kvReplaceAllAsync(entries)')
+        expect(server).toContain('await kvPublishImportAsync(nativeImport')
+        expect(server).toContain("stagedKvEntries.filter(entry => entry.key !== 'database/database.bin') : stagedKvEntries")
+        expect(server.includes('await publishImportedSnapshot(database, entries, canonicalStagingDir)')).toBe(true)
     })
 
     it('keeps backup entries and canonical transaction inputs disk-backed', () => {
         expect(server).toContain('stageBackupEntries(dataSource')
-        expect(server).toContain('sourcePath: path.join(canonicalStagingDir, relativePath)')
+        expect(server.includes('collectImportFiles(canonicalStagingDir)')).toBe(true)
+        const staging = readFileSync(new URL('./canonical-import.cjs', import.meta.url), 'utf8')
+        expect(staging.includes('sourcePath: path.join(root, relative)')).toBe(true)
         expect(server).not.toContain('stagedKvEntries.push({ key: storageKey, value: Buffer.from(storageValue) })')
     })
 

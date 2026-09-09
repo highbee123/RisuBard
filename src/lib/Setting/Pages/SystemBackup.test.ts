@@ -17,6 +17,15 @@ describe('system backup surface', () => {
         expect(backupPage).toContain('LoadLocalBackup')
     })
 
+    it('offers atomic V2 item preview and import from another data root', () => {
+        const backupPage = read('src/lib/Setting/Pages/SystemBackup.svelte')
+
+        expect(backupPage).toContain('previewV2ItemImport')
+        expect(backupPage).toContain('executeV2ItemImport')
+        expect(backupPage).toContain('v2ImportSourcePath')
+        expect(backupPage).toContain('v2ImportIncludeDependencies')
+    })
+
     it('does not expose server backups, compatibility snapshots, or boot backup prompts', () => {
         const backupPage = read('src/lib/Setting/Pages/SystemBackup.svelte')
         const dashboard = read('src/lib/Setting/Pages/SystemDashboard.svelte')

@@ -7,8 +7,16 @@ const environmentPath = resolve(process.cwd(), 'src/lib/Setting/ExperienceSettin
 const sidebarPath = resolve(process.cwd(), 'src/lib/SideBars/Sidebar.svelte')
 const appPath = resolve(process.cwd(), 'src/App.svelte')
 const personaManagerPath = resolve(process.cwd(), 'src/lib/Others/PersonaManager.svelte')
+const searchManifestPath = resolve(process.cwd(), 'src/ts/setting/searchManifestData.ts')
 
 describe('settings consolidation', () => {
+    test('keeps backup and transfer work on the System backup tab', () => {
+        const settings = readFileSync(settingsPath, 'utf8')
+        const searchManifest = readFileSync(searchManifestPath, 'utf8')
+
+        expect(settings).not.toContain('<MigrationSettings')
+        expect(searchManifest).not.toContain('manual.page.migration')
+    })
     test('uses stronger secondary text contrast inside settings', () => {
         const source = readFileSync(settingsPath, 'utf8')
 

@@ -1,6 +1,8 @@
 import { changeFullscreen, checkNullish, sleep } from "./util"
 import { v4 as uuidv4, v4 } from 'uuid';
 import { tick } from "svelte";
+import { isNativeRuntime, nativeRuntime } from './storage/nativeRuntime';
+import { trackNativeDocuments } from './storage/nativeDocumentTracking.svelte';
 import { get } from "svelte/store";
 import streamSaver from 'streamsaver';
 import { setDatabase, type Database, defaultSdDataFunc, getDatabase, appVer, nodeOnlyVer, getCurrentCharacter, loadTogglesFromChat } from "./storage/database.svelte";
@@ -456,13 +458,15 @@ export async function saveDb() {
         pluginCustomStorage: false
     }
 
-    let encoder = new RisuSaveEncoder()
-    await encoder.init(getDatabase(), {
-        compression: false
-    })
+    let encoder: RisuSaveEncoder
+    if (!isNativeRuntime()) {
+        encoder = new RisuSaveEncoder()
+        await encoder.init(getDatabase(), { compression: false })
+    }
 
-    let patcher = new RisuSavePatcher()
-    if (supportsPatchSync) {
+    let patcher: RisuSavePatcher
+    if (supportsPatchSync && !isNativeRuntime()) {
+        patcher = new RisuSavePatcher()
         await patcher.init(patchSyncBaseline ?? getDatabase())
         patchSyncBaseline = null
     }
@@ -481,8 +485,8 @@ export async function saveDb() {
 
     function takeTrackedChanges() {
         const toSave = safeStructuredClone(changeTracker)
-        changeTracker.character = changeTracker.character.length === 0 ? [] : [changeTracker.character[0]]
-        changeTracker.chat = changeTracker.chat.length === 0 ? [] : [changeTracker.chat[0]]
+        changeTracker.character = []
+        changeTracker.chat = []
         changeTracker.root = false
         changeTracker.botPreset = false
         changeTracker.modules = false
@@ -492,6 +496,7 @@ export async function saveDb() {
     }
 
     async function flushServerDbNow(keepalive = false) {
+        if (isNativeRuntime()) return
         const response = await fetch('/api/db/flush', {
             method: 'POST',
             keepalive,
@@ -554,6 +559,16 @@ export async function saveDb() {
             if (document.visibilityState === 'hidden') flushImmediate();
         });
         window.addEventListener('pagehide', flushImmediate);
+
+        // Native cache entries can be edited outside the selected character
+        // (vault actions and plugins). Track each document reactively; an idle
+        // browser never polls or serializes all loaded message bodies.
+        if (isNativeRuntime()) trackNativeDocuments(() => DBState.db, target => {
+            if (!nativeRuntime.documentDirty(target)) return
+            if (target.kind === 'character') changeTracker.character = [...new Set([target.id, ...changeTracker.character])]
+            else if (!changeTracker.chat.some(([parentId, id]) => parentId === target.parentId && id === target.id)) changeTracker.chat.push([target.parentId, target.id])
+            saveTimeoutExecute()
+        }, isHydrating)
 
         $effect(() => {
             for (const key in DBState.db) {
@@ -626,7 +641,7 @@ export async function saveDb() {
             }
             knownCharacterIds = currentCharacterIdSet
 
-            if (DBState?.db?.characters?.[selIdState]) {
+            if (!isNativeRuntime() && DBState?.db?.characters?.[selIdState]) {
                 for (const key in DBState.db.characters[selIdState]) {
                     // Exclude chats — chat changes are tracked via chat-specific server save, not database.bin
                     if (key !== 'chats') {
@@ -653,6 +668,7 @@ export async function saveDb() {
             saveTimeoutExecute()
         })
         $effect(() => {
+            if (isNativeRuntime()) return
             const activeChar = DBState?.db?.characters?.[selIdState]
             const activeChat = activeChar?.chats?.[activeChar?.chatPage]
             if (activeChat) {
@@ -851,6 +867,10 @@ export async function saveDb() {
         if (!db.characters) {
             await sleep(1000)
             return 'noop'
+        }
+        if (nativeRuntime) {
+            await nativeRuntime.persist(options?.forceFullWrite ? undefined : toSave)
+            return 'saved'
         }
 
         // ── Save changed chat content to server ─────────────────────────
@@ -1111,6 +1131,7 @@ export async function saveDb() {
         return 'saved'
     }
 
+    const reportedNativeConflicts = new WeakSet<object>()
     async function triggerSave(options?: {
         forceFullWrite?: boolean
         skipBroadcast?: boolean
@@ -1126,7 +1147,8 @@ export async function saveDb() {
         }
 
         saveInFlight = (async () => {
-            saving.state = true
+            const nativeSavingIndicator = !!nativeRuntime
+            if (!nativeSavingIndicator) saving.state = true
             try {
                 const result = await persistTrackedChanges(toSave, options)
                 if (result === 'saved') {
@@ -1144,6 +1166,16 @@ export async function saveDb() {
                 }
             } catch (error) {
                 requeueTrackedChanges(toSave)
+                if (isNativeRuntime() && (error as any)?.status === 409) {
+                    // The document cache already attempted one safe rebase. A
+                    // conflict needs resolution, not the transient-error loop.
+                    if (!reportedNativeConflicts.has(error as object)) {
+                        reportedNativeConflicts.add(error as object)
+                        alertError(error)
+                    }
+                    if (options?.rejectOnFailure) throw error
+                    return
+                }
                 savetrys += 1
                 if (options?.rejectOnFailure) {
                     changed = true
@@ -1159,7 +1191,7 @@ export async function saveDb() {
                     changed = true
                 }
             } finally {
-                saving.state = false
+                if (!nativeSavingIndicator) saving.state = false
                 saveInFlight = null
             }
         })()
@@ -1175,7 +1207,7 @@ export async function saveDb() {
             forceFullWrite: options?.forceFullWrite,
             rejectOnFailure: options?.rejectOnFailure,
         })
-        if (options?.flushServer && supportsPatchSync) {
+        if (options?.flushServer && supportsPatchSync && !isNativeRuntime()) {
             await flushServerDbNow()
         }
     }
@@ -1187,7 +1219,7 @@ export async function saveDb() {
             continue
         }
         changed = false
-        if (requiresFullEncoderReload.state) {
+        if (requiresFullEncoderReload.state && !isNativeRuntime()) {
             encoder = new RisuSaveEncoder()
             await encoder.init(getDatabase(), {
                 compression: false,
@@ -2705,7 +2737,7 @@ export function changeChatTo(IdOrIndex: string | number) {
     char.chatPage = index
     const newChat = char.chats[index]
     if(newChat){
-        if(newChat._placeholder){
+        if(newChat._placeholder || nativeRuntime){
             const capturedIndex = index
             let cancelled = false
             loadingOverlayStore.set({ active: true, text: language.loading ?? '', onCancel: () => {
@@ -2713,7 +2745,7 @@ export function changeChatTo(IdOrIndex: string | number) {
                 chatDeselected.set(true)
                 loadingOverlayStore.set({ active: false, text: '', onCancel: null })
             }})
-            void ensureChatHydrated(char.chats, capturedIndex, char.chaId).then((hydrated) => {
+            void ensureChatHydrated(char.chats, capturedIndex, char.chaId, true).then((hydrated) => {
                 if(cancelled) return
                 if(hydrated && char.chatPage === capturedIndex) loadTogglesFromChat(hydrated)
             }).catch((e) => {

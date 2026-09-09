@@ -1,6 +1,9 @@
 import { get, writable } from "svelte/store";
 import { saveImage, setDatabase, type character, type Chat, defaultSdDataFunc, type loreBook, getDatabase, getCharacterByIndex, setCharacterByIndex, getCurrentChat, loadTogglesFromChat, normalizeChat, newChatModelDefaults } from "./storage/database.svelte";
 import { ensureChatHydrated } from "./storage/chatStorage";
+import { ensureCharacterReady, nativeRuntime } from './storage/nativeRuntime';
+import { nativeClone } from './storage/nativeDocuments';
+import { loadingActivity } from './gui/loadingActivity';
 import { alertAddCharacter, alertConfirm, alertError, alertSelect, alertStore, alertWait, notifySuccess, notifyInfo } from "./alert";
 import { loadingOverlayStore, chatDeselected } from "./stores.svelte";
 import { language } from "../lang";
@@ -48,6 +51,7 @@ export async function getCharImage(loc:string, type:'plain'|'css'|'contain'|'lgc
         return null
     }
     const filesrc = await getFileSrc(loc)
+    loadingActivity.image(filesrc, loc.split(/[\\/]/).pop() || loc)
     if(type === 'plain'){
         return filesrc
     }
@@ -174,6 +178,7 @@ export async function exportChat(page:number){
         const doTranslate = (mode === '2' || mode === '3') ? (await alertSelect([language.translateContent, language.doNotTranslate])) === '0' : false
         const anonymous = (mode === '2' || mode === '3') ? ((await alertSelect([language.includePersonaName, language.hidePersonaName])) === '1') : false
         const selectedID = get(selectedCharID)
+        await ensureCharacterReady(getDatabase().characters[selectedID]?.chaId)
         const db = getDatabase()
         const char = db.characters[selectedID]
         // Ensure chat is hydrated before export
@@ -576,6 +581,7 @@ export async function importChat(){
 export async function exportAllChats() {
     try {
         const selectedID = get(selectedCharID)
+        await ensureCharacterReady(getDatabase().characters[selectedID]?.chaId)
         const db = getDatabase()
         const char = db.characters[selectedID]
         const date = new Date().toISOString().replace(/[:.]/g, "-")
@@ -872,7 +878,8 @@ export async function addCharacter(arg:{
     MobileGUIStack.set(1)
 }
 
-export function changeChar(index: number, arg:{
+let characterSelectionRequest = 0
+export async function changeChar(index: number, arg:{
     reseter?:()=>any,
     clearNewBadge?:boolean,
 } = {}) {
@@ -880,17 +887,32 @@ export function changeChar(index: number, arg:{
     if(get(doingChat)){
       return
     }
+    const request = ++characterSelectionRequest
+    const id = getDatabase().characters[index]?.chaId
+    if (!id) return
+    const loading = loadingActivity.select(getDatabase().characters[index].name || id)
+    try {
+    await ensureCharacterReady(id, true)
+    if (request !== characterSelectionRequest || !loading.current()) return
     const db = getDatabase()
+    index = db.characters.findIndex(character => character.chaId === id)
     const char = db.characters[index]
+    if (!char) return
+    if (char.chats?.[char.chatPage] && (nativeRuntime || char.chats[char.chatPage]._placeholder)) {
+        const chat = await ensureChatHydrated(char.chats, char.chatPage, id, true)
+        if (!chat || request !== characterSelectionRequest || !loading.current()) return
+    }
     if(arg.clearNewBadge !== false){
       clearCharacterVaultNew(db, char.chaId)
     }
     reseter();
     chatDeselected.set(false)
     if(needsCharacterRuntimeNormalization(char)){
+        const before = nativeClone(char)
         characterFormatUpdate(index, {
           updateInteraction: true,
         });
+        nativeRuntime?.acknowledgeCharacterNormalization(id, before)
     } else {
         char.lastInteraction = Date.now()
     }
@@ -925,5 +947,10 @@ export function changeChar(index: number, arg:{
         } else {
             loadTogglesFromChat(chat)
         }
+    }
+    } catch (error) {
+        if (loading.current()) alertError(error instanceof Error ? error.message : String(error))
+    } finally {
+        loading.finish()
     }
 }
