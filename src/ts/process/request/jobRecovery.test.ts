@@ -841,3 +841,58 @@ describe('PageFold recovery', () => {
         expect((await recovery.decodeStreamingJournalDetailed('openai-compatible', sseStream(wire), { version: 1 })).text).toBe('one\ntwo')
     })
 })
+
+test.each([true, false])('defers a disconnected PDF attempt until recovery and stores its final outcome exactly once, success=%s', async success => {
+    const { recovery } = await loadModules()
+    const { createRequestLogScope, recordRequestLog } = await import('src/ts/requestLog')
+    const { markFailed } = await import('src/ts/preset/pageFold/runtime')
+    const { ModelJobConnectionLostError } = await import('./jobFetch')
+    const { createRequire } = await import('node:module')
+    const fs = await import('node:fs')
+    const os = await import('node:os')
+    const path = await import('node:path')
+    const { createRequestLogs } = createRequire(import.meta.url)('../../../../server/node/request-logs.cjs')
+    const saveDir = fs.mkdtempSync(path.join(os.tmpdir(), 'risubard-pagefold-recovery-'))
+    try {
+        const store = createRequestLogs({ saveDir })
+        const chat = makeChat()
+        mocks.db.characters = [makeChar(chat)]
+        mocks.db.requestLogEnabled = true
+        setupServer({ journals: { 'job-1': JSON.stringify({ candidates: [{ content: { parts: [{ text: 'OK' }] } }], usageMetadata: { promptTokenCount: 20, candidatesTokenCount: 3, thoughtsTokenCount: 2 } }) } })
+        const serverFetch = globalThis.fetch
+        const accepted: number[] = []
+        let recovered: any
+        vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+            if (String(input) === '/api/request-logs') {
+                const rows = JSON.parse(init!.body as string)
+                recovered = rows[0]
+                accepted.push(store.addRequestLogBatch(rows))
+                return new Response('{"success":true}')
+            }
+            return serverFetch(input, init)
+        })
+        const metadata: any = { version: 1, kind: 'google', requestId: 'same-attempt', presetId: 'p', comparable: true, baselineTokens: 100, inputPrice: 1 }
+        const job = makeJob({ adapterKind: 'google-gemini', streaming: false, upstreamStatus: success ? 200 : 500, pageFold: { ...metadata } })
+        const scope = createRequestLogScope({ category: 'llm', source: 'main', pageFold: true })
+        const lost = new ModelJobConnectionLostError()
+        const wrapped = scope.wrap(async () => new Response(new ReadableStream({ start(controller) { controller.error(lost) } })))
+        const response = await wrapped('https://example.test', { __pageFold: metadata } as any)
+        try { await response.text() } catch (error) { markFailed({ __pageFold: metadata }, error) }
+        await scope.close()
+        expect(accepted).toEqual([])
+        expect(store.queryUsage({}).total.requests).toBe(0)
+        await recovery.recoverTerminalJob(job as any)
+        await vi.waitFor(() => expect(accepted).toEqual([1]))
+        if (success) {
+            expect(chat.message.at(-1).data).toBe('OK')
+            expect(recovered).toMatchObject({ success: true, inputTokens: 20, outputTokens: 3, reasoningTokens: 2, pageFold: { requestId: 'same-attempt', savedTokens: 80, savedUsd: 0.00008 } })
+        } else expect(recovered).toMatchObject({ success: false, pageFold: { requestId: 'same-attempt', savedTokens: null, savedUsd: null } })
+        recordRequestLog(recovered)
+        await vi.waitFor(() => expect(accepted).toEqual([1, 0]))
+        expect(store.queryUsage({}).total.requests).toBe(1)
+        expect(store.getRequestLog(1).success).toBe(success)
+    } finally {
+        if (path.dirname(path.resolve(saveDir)) !== path.resolve(os.tmpdir()) || !path.basename(saveDir).startsWith('risubard-pagefold-recovery-')) throw Error('Unsafe test cleanup')
+        fs.rmSync(saveDir, { recursive: true, force: true })
+    }
+})

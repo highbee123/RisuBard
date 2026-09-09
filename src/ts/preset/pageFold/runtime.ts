@@ -183,8 +183,16 @@ export async function prepare<T extends AdapterPreparedRequest>(prepared: T, pre
 // Per-attempt state stays local; only settled prices and existing log fields are persisted.
 const pendingPrices = new WeakMap<PageFoldMetadata, Promise<DiscoveredPrice | null>>();
 const attemptFailures = new WeakMap<PageFoldMetadata, string>();
+const awaitingRecovery = new WeakSet<PageFoldMetadata>();
 export function markFailed(prepared: Pick<AdapterPreparedRequest, '__pageFold'>, error: unknown): void {
-  if (prepared.__pageFold) attemptFailures.set(prepared.__pageFold, error instanceof Error ? error.message : String(error));
+  if (!prepared.__pageFold) return;
+  // jobFetch uses this error when the journal connection is lost, not when
+  // generation fails. Recovery owns the final record for this requestId.
+  if (error instanceof Error && error.name === 'ModelJobConnectionLostError') {
+    awaitingRecovery.add(prepared.__pageFold);
+    return;
+  }
+  attemptFailures.set(prepared.__pageFold, error instanceof Error ? error.message : String(error));
 }
 export async function settlePrices(entries: PageFoldLogEntry[]): Promise<void> {
   await Promise.all(entries.map(async entry => {
@@ -233,6 +241,7 @@ export function finalizeLogs<T extends PageFoldLogEntry>(entries: T[], saveBodie
     if (!entry.pageFold) continue;
     const pf = entry.pageFold;
     try {
+      if (awaitingRecovery.has(pf) && !entry.aborted) continue;
       const failure = attemptFailures.get(pf);
       if (failure) { entry.success = false; entry.errorMessage ??= failure; }
       pf.responseTokens = null;
@@ -274,7 +283,7 @@ export function finalizeLogs<T extends PageFoldLogEntry>(entries: T[], saveBodie
       }
     }
   }
-  return entries;
+  return entries.filter(entry => !entry.pageFold || entry.aborted || !awaitingRecovery.has(entry.pageFold));
 }
 export function finite(v: unknown): number | null { return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null; }
 

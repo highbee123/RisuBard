@@ -1,5 +1,5 @@
 import type { PageFoldMetadata, PageFoldRequestInit } from './preset/pageFold/types'
-import { finalizeLogs as finalizePageFoldLogs, settlePrices as settlePageFoldPrices, sanitizeBody as sanitizePageFoldBody } from './preset/pageFold/runtime'
+import { finalizeLogs as finalizePageFoldLogs, markFailed as markPageFoldFailed, settlePrices as settlePageFoldPrices, sanitizeBody as sanitizePageFoldBody } from './preset/pageFold/runtime'
 // Client-side collection for the server request log (save/request-logs.db).
 //
 // Replaces the old in-memory `fetchLog` array in globalApi.svelte.ts, which
@@ -529,7 +529,7 @@ export function createRequestLogScope(init: RequestLogScopeInit): RequestLogScop
             }
             if (!overflowed) text += decoder.decode()
         } catch (err) {
-            if (entry.pageFold) entry.success = false
+            if (entry.pageFold) markPageFoldFailed({ __pageFold: entry.pageFold }, err)
             entry.errorMessage ??= (err as Error)?.message ?? String(err)
         } finally {
             if (onAbort) signal?.removeEventListener('abort', onAbort)

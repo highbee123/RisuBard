@@ -435,24 +435,29 @@ it.each([['google', true], ['google', false], ['openai', true], ['openai', false
     configure({})
     const preset: any = {
         id: 'pdf-stream', name: 'PDF', userValues: {}, pageFold: { enabled, inputPrice: 1 },
-        profileSnapshot: { modelId: 'gemini-test', adapterKind: 'google-gemini', providerBaseId: 'google',
-            auth: { kind: 'x-goog-api-key', fields: ['apiKey'] },
-            endpoint: { kind: 'static', url: 'https://example.test/v1beta/models' }, schema: [], defaults: {} },
+        profileSnapshot: { modelId: 'gemini-test', adapterKind: kind === 'google' ? 'google-gemini' : 'openai-compatible', providerBaseId: kind,
+            auth: { kind: kind === 'google' ? 'x-goog-api-key' : 'bearer', fields: ['apiKey'] },
+            endpoint: { kind: 'static', url: kind === 'google' ? 'https://example.test/v1beta/models' : 'https://example.test/v1/chat/completions' }, schema: [], defaults: {} },
     }
     const scope = createRequestLogScope({ category: 'llm', source: 'main', pageFold: enabled })
     const usage = kind === 'google'
         ? 'data: {"usageMetadata":{"promptTokenCount":20,"candidatesTokenCount":3,"thoughtsTokenCount":2}}\n\n'
         : 'data: {"usage":{"prompt_tokens":20,"completion_tokens":3,"completion_tokens_details":{"reasoning_tokens":2}}}\n\n'
     let attempt = 0
+    const success = kind === 'google'
+        ? { candidates: [{ content: { parts: [{ text: 'OK' }] }, finishReason: 'STOP' }] }
+        : { choices: [{ delta: { content: 'OK' }, finish_reason: 'stop' }] }
     const fetchImpl = scope.wrap(async () => new Response(streamOf([
-        usage, ++attempt === 1 ? 'data: {broken-json\n\n' : 'data: {"candidates":[{"content":{"parts":[{"text":"OK"}]},"finishReason":"STOP"}]}\n\n',
+        usage, ++attempt === 1 ? 'data: {broken-json\n\n' : 'data: ' + JSON.stringify(success) + '\n\n',
     ]), { headers: { 'content-type': 'text/event-stream' } }))
     const send = async () => {
         const stream = kind === 'google' ? streamGoogleChatRequest : streamChatRequest
-        for await (const _ of stream(preset, { messages: [{ role: 'user', content: 'hello' }], fetchImpl }, { apiKey: 'k' })) { /* drain */ }
+        let text = ''
+        for await (const delta of stream(preset, { messages: [{ role: 'user', content: 'hello' }], fetchImpl }, { apiKey: 'k' })) text += delta.textDelta
+        return text
     }
     await expect(send()).rejects.toThrow()
-    await send()
+    expect(await send()).toBe('OK')
     await scope.close()
     const rows = posted.flat()
     expect(rows).toHaveLength(2)
@@ -499,4 +504,26 @@ it('waits for the in-flight PDF price before posting the completed log', async (
     await closing
     expect(posted.flat()[0].pageFold).toMatchObject({ inputPrice: 1, savedTokens: 80, savedUsd: 0.00008 })
     configure({})
+})
+
+it.each([true, false])('defers only PDF statistics for a recoverable journal disconnect, PDF=%s', async enabled => {
+    const { ModelJobConnectionLostError } = await import('./process/request/jobFetch')
+    const scope = createRequestLogScope({ category: 'llm', source: 'main', pageFold: enabled })
+    const wrapped = scope.wrap(async () => new Response(new ReadableStream({ start(controller) { controller.error(new ModelJobConnectionLostError()) } })))
+    const res = await wrapped('https://example.test', { __pageFold: enabled ? { version: 1, requestId: 'lost' } : undefined } as any)
+    await expect(res.text()).rejects.toThrow()
+    await scope.close()
+    expect(posted.flat()).toHaveLength(enabled ? 0 : 1)
+})
+
+it('retains an explicit user abort when a PDF journal disconnect races with it', async () => {
+    const { ModelJobConnectionLostError } = await import('./process/request/jobFetch')
+    const abort = new AbortController()
+    const scope = createRequestLogScope({ category: 'llm', source: 'main', pageFold: true })
+    const wrapped = scope.wrap(async () => new Response(new ReadableStream({ start(controller) { controller.error(new ModelJobConnectionLostError()) } })))
+    const res = await wrapped('https://example.test', { signal: abort.signal, __pageFold: { version: 1, requestId: 'aborted', comparable: true, baselineTokens: 100 } } as any)
+    abort.abort()
+    await expect(res.text()).rejects.toThrow()
+    await scope.close()
+    expect(posted.flat()[0]).toMatchObject({ aborted: true, success: false, pageFold: { savedTokens: null } })
 })
