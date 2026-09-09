@@ -100,6 +100,15 @@ export async function prepare<T extends AdapterPreparedRequest>(prepared: T, pre
   if (!prefix.length) throw Error(language.pageFold.noPdfMessages);
   const text = prefix.map((m, i) => ({ role: m.role, content: String(m.content ?? '') + (m.images?.length ? '\n[' + m.images.length + ' image(s) from message ' + (i + 1) + ' attached separately]' : '') }));
   const packed = packagePrompt(text, cfg.packagingMode, { mergeConsecutiveRoles: cfg.mergeConsecutiveRoles });
+  if (tail.length) {
+    if (cfg.packagingMode === 'maximum') {
+      packed.systemText = packed.systemText.replace(
+        'The attached PDF contains the complete ordered prompt and conversation transcript.',
+        'The attached PDF contains the earlier portion of the ordered prompt and conversation transcript.',
+      );
+    }
+    packed.systemText += ' Subsequent messages and tool records follow separately after the PDF attachment. Read them as the continuation of the PDF context, and respond after considering the full sequence.';
+  }
   status({ presetId: preset.id, generationId: options.generationId, phase: language.pageFold.generating });
   // Exact input comparison avoids collisions in the original 32-bit hash cache.
   const cacheKey = JSON.stringify([packed.pdfTranscript, cfg.fontSize]);

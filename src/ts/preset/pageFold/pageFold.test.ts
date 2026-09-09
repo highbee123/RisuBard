@@ -1,11 +1,11 @@
 import { changeLanguage } from 'src/lang'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { configure, state, prepare, finalizeLogs, sanitize, wrapFetch } from './runtime'
-import { generateTranscriptPdf } from './vendor.mjs'
+import { generateTranscriptPdf, packagePrompt } from './vendor.mjs'
 import { sendGoogleChatRequest, streamGoogleChatRequest } from '../adapter/googleGemini'
 import { sendChatRequest } from '../adapter/openaiCompatible'
 import type { ModelPreset, ResolvedModelProfileSnapshot } from '../types'
-import type { AdapterChatMessage } from '../adapter/types'
+import type { AdapterChatMessage, AdapterPreparedRequest } from '../adapter/types'
 
 const preset = (modelId = 'gemini-demo', enabled = true): any => ({
     id: 'preset-1', name: '프리셋', userValues: {},
@@ -323,4 +323,33 @@ it.each([
     const body = JSON.parse(init.body as string)
     expect(body.contents[0].parts).toContainEqual({ text: 'Image from message 1' })
     expect(body.contents[0].parts).toContainEqual({ inlineData: { mimeType: 'image/png', data: 'YWJj' } })
+})
+
+
+it.each(['maximum', 'balanced'] as const)('describes partial PDFs in %s mode without changing the native tail', async (mode) => {
+    const p = preset()
+    p.pageFold.packagingMode = mode
+    const tail = { role: 'assistant' as const, content: 'Signed response', reasoning: [{ signature: 'opaque' }] }
+    for (const kind of ['google', 'openai'] as const) {
+        const nativeTail = kind === 'google'
+            ? { role: 'model', parts: [{ text: 'Signed response', thoughtSignature: 'opaque' }] }
+            : { role: 'assistant', content: 'Signed response', reasoning_details: [{ signature: 'opaque' }] }
+        const body = kind === 'google'
+            ? { contents: [{ role: 'user', parts: [{ text: 'Earlier message' }] }, nativeTail] }
+            : { messages: [...messages, nativeTail] }
+        const prepared: AdapterPreparedRequest = { method: 'POST', url: 'https://example.test/chat/completions', headers: {}, body }
+        const full = await prepare(structuredClone(prepared), p, { messages }, kind)
+        const partial = await prepare(structuredClone(prepared), p, { messages: [...messages, tail] }, kind)
+        const wire = partial.body as any
+        const instruction = kind === 'google' ? wire.systemInstruction.parts[0].text : wire.messages[0].content
+        const fullWire = full.body as any
+        const fullInstruction = kind === 'google' ? fullWire.systemInstruction.parts[0].text : fullWire.messages[0].content
+        expect(fullInstruction).toBe(packagePrompt(messages, mode).systemText)
+        expect(instruction).not.toContain('contains the complete ordered prompt and conversation transcript')
+        expect(instruction).toContain('Subsequent messages and tool records follow separately after the PDF attachment.')
+        expect(instruction).toContain('every real line break is serialized as a literal')
+        expect((kind === 'google' ? wire.contents : wire.messages).at(-1)).toEqual(nativeTail)
+        expect(partial.__pageFold.pdfContent).toBe(full.__pageFold.pdfContent)
+        if (mode === 'balanced') expect(instruction).toContain('시스템 지시')
+    }
 })
