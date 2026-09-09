@@ -14,7 +14,7 @@
     const l = language.pageFold
     const n = (v: unknown) => typeof v === 'number' && Number.isFinite(v) ? v.toLocaleString(undefined, { maximumFractionDigits: 1 }) : '—'
     type Row = { id: number, timestamp: number, model: string, inputTokens?: number, outputTokens?: number, durationMs?: number, aborted?: boolean, success?: boolean, requestBody?: string, responseBody?: string, requestHeaders?: string, pageFold: PageFoldMetadata }
-    type Report = { total: Record<string, number>, byModel: Record<string, any>[], daily: Record<string, any>[], rows: Row[], nextBefore?: string, filters: { presets: { id: string, name: string }[], models: string[], providers: string[], sources: string[] } }
+    type Report = { total: Record<string, number>, byModel: Record<string, any>[], daily: Record<string, any>[], rows: Row[], nextBefore?: string, filters: { presets: { id: string, name: string }[], models: string[] } }
     let scope = $state(''), period = $state('0'), model = $state('')
     let report = $state<Report | null>(null), rows = $state<Row[]>([])
     let loading = $state(false), error = $state('')
@@ -112,7 +112,7 @@
             <div class="overflow-x-auto">
                 <table class="w-full text-xs">
                     <thead><tr class="text-textcolor2 border-b border-darkborderc/50">
-                        {#each [l.time, l.preset, l.title, l.inputFlow, l.rate, l.output, l.duration, l.status, l.detail] as header}<th class="px-3 py-2 text-left font-medium whitespace-nowrap">{header}</th>{/each}
+                        {#each [l.time, l.preset, l.pages, l.inputFlow, l.rate, l.output, l.duration, l.status, l.detail] as header}<th class="px-3 py-2 text-left font-medium whitespace-nowrap">{header}</th>{/each}
                     </tr></thead>
                     <tbody>{#each rows as row (row.id)}
                         <tr class="border-b border-darkborderc/30 hover:bg-selected/20">

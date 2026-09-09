@@ -80,7 +80,7 @@ pageFold.configure({
     status: (detail) => {
         if (!detail.generationId || getDatabase().showRequestStatus === false) return
         const saved = detail.savedTokens
-        addBadge(detail.generationId, { key: 'pagefold', text: 'PDF · ' + detail.phase + (detail.pages ? ' · ' + detail.pages + 'p' : '') + (detail.bytes ? ' · ' + Math.round(detail.bytes / 1024) + 'KB' : '') + (typeof detail.inputTokens === 'number' ? ' · 입력 ' + detail.inputTokens.toLocaleString() : '') + (typeof saved === 'number' ? ' · 예상 ' + saved.toLocaleString() + ' 토큰 절약' : ''), tone: typeof saved === 'number' && saved < 0 ? 'warn' : 'info' })
+        addBadge(detail.generationId, { key: 'pagefold', text: 'PDF · ' + detail.phase + (detail.pages ? ' · ' + detail.pages + 'p' : '') + (detail.bytes ? ' · ' + Math.round(detail.bytes / 1024) + 'KB' : '') + (typeof detail.inputTokens === 'number' ? ' · ' + language.pageFold.badgeInput.replace('{0}', detail.inputTokens.toLocaleString()) : '') + (typeof saved === 'number' ? ' · ' + language.pageFold.badgeSaved.replace('{0}', saved.toLocaleString()) : ''), tone: typeof saved === 'number' && saved < 0 ? 'warn' : 'info' })
     },
 })
 

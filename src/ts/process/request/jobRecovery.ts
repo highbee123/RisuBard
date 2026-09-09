@@ -343,7 +343,7 @@ function recordJobRecoveryLog(
     result: { ok: true, text: string, usage?: AdapterUsage } | { ok: false, error: string },
 ): void {
     recordRequestLog({
-        pageFold: job.pageFold ? { ...job.pageFold, recovered: true } : undefined,
+        pageFold: job.pageFold ? { ...job.pageFold } : undefined,
         timestamp: Date.now(),
         category: 'llm',
         // Recovered jobs are always main chat generations — aux jobs are

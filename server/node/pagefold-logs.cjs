@@ -8,7 +8,7 @@ function clean(value) {
   if (!value || typeof value !== 'object') return value;
   const out = {};
   for (const [key, v] of Object.entries(value)) {
-    if (/^(authorization|proxy-authorization|x-api-key|x-goog-api-key|api[-_]?key|access[-_]?token|refresh[-_]?token|private[-_]?key|client[-_]?secret|service[-_]?account)$/i.test(key)) out[key] = '[인증정보 제거]';
+    if (/^(authorization|proxy-authorization|x-api-key|x-goog-api-key|api[-_]?key|access[-_]?token|refresh[-_]?token|private[-_]?key|client[-_]?secret|service[-_]?account)$/i.test(key)) out[key] = '[Credentials redacted]';
     else out[key] = clean(v);
   }
   return out;
@@ -59,7 +59,7 @@ function register(app, { guard, sessionGuard, getRequests, getUsage, replace }) 
       const rows = usage.filter(r => !Number(req.query.before) || r.id < Number(req.query.before)).sort((a,b) => b.id-a.id).slice(0, 50).map(r => { const out = { ...r, pageFold: { ...r.pageFold } }; delete out.pageFold.pdfContent; delete out.requestBody; delete out.responseBody; delete out.requestHeaders; return out; });
       const { dayKey } = require('./request-logs.cjs');
       const days = new Map(); for (const row of usage) { const key = dayKey(row.timestamp); if (!days.has(key)) days.set(key, []); days.get(key).push(row); }
-      const filters = { presets: [...new Map(all.map(r => [r.pageFold.presetId, { id: r.pageFold.presetId, name: r.pageFold.presetName || r.pageFold.presetId }])).values()], models: [...new Set(all.map(r => r.model).filter(Boolean))], providers: [...new Set(all.map(r => r.provider).filter(Boolean))], sources: [...new Set(all.map(r => r.source).filter(Boolean))] };
+      const filters = { presets: [...new Map(all.map(r => [r.pageFold.presetId, { id: r.pageFold.presetId, name: r.pageFold.presetName || r.pageFold.presetId }])).values()], models: [...new Set(all.map(r => r.model).filter(Boolean))] };
       res.json({ success: true, filters, daily: [...days].sort(([a],[b])=>a.localeCompare(b)).map(([day,rs])=>({day,...summary(rs)})), total: summary(usage), byModel: [...groups.values()].map(rs => ({ model: rs[0].model, provider: rs[0].provider, ...summary(rs) })), rows, nextBefore: rows.length === 50 ? rows.at(-1).id : null });
     } catch(e) { next(e); }
   });

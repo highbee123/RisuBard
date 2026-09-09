@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { changeLanguage } from 'src/lang'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { configure, state, prepare, finalizeLogs, sanitize, wrapFetch } from './runtime'
 import { generateTranscriptPdf } from './vendor.mjs'
 import { sendGoogleChatRequest, streamGoogleChatRequest } from '../adapter/googleGemini'
@@ -105,6 +106,7 @@ function captureFetch(response: Response | (() => Response)): {
 }
 
 beforeEach(() => configure({}))
+afterEach(() => changeLanguage('en'))
 describe('PageFold preset eligibility and wire behavior', () => {
     it('uses the effective model ID, never the display name; stale flags cannot enable non-Gemini', () => {
         const p = preset('claude'); p.name = 'Gemini'; expect(state(p).active).toBe(false)
@@ -278,7 +280,7 @@ describe('PageFold usage and response correctness', () => {
         expect(rows[0].pageFold.savedTokens).toBeNull(); expect(rows[0].pageFold.savedUsd).toBeNull()
     })
     it('redacts authorization and inline binary content recursively', () => {
-        expect(sanitize({ authorization: 'secret', parts: [{ inlineData: { mimeType: 'application/pdf', data: 'base64' } }] })).toEqual({ authorization: '[인증정보 제거]', parts: [{ inlineData: { mimeType: 'application/pdf', data: '[첨부 데이터 생략]' } }] })
+        expect(sanitize({ authorization: 'secret', parts: [{ inlineData: { mimeType: 'application/pdf', data: 'base64' } }] })).toEqual({ authorization: '[Credentials redacted]', parts: [{ inlineData: { mimeType: 'application/pdf', data: '[Attachment data omitted]' } }] })
     })
     it('restores split newline markers in SSE and leaves code and reasoning intact', async () => {
         const frames = [
@@ -303,4 +305,22 @@ describe('PageFold usage and response correctness', () => {
         const text = new TextDecoder('latin1').decode(pdf.bytes)
         expect(text).toContain('/ToUnicode'); expect(text).toContain('%%EOF')
     })
+})
+
+
+it.each([
+    ['en', 'Generating PDF', 'Preparing PDF request', 'Waiting for response'],
+    ['ko', 'PDF 생성 중', 'PDF 전송 준비', '응답 기다리는 중'],
+])('localizes PDF status in %s while keeping image markers independent of UI language', async (locale, generating, preparing, waiting) => {
+    changeLanguage(locale)
+    const phases: string[] = []
+    configure({ status: detail => phases.push(detail.phase) })
+    const fetchImpl = vi.fn(async () => response())
+    const input = [{ role: 'user' as const, content: 'Describe this image.', images: [{ kind: 'image' as const, mime: 'image/png', base64: 'YWJj' }] }]
+    await sendGoogleChatRequest(preset(), { messages: input, fetchImpl }, { apiKey: 'k' })
+    expect(phases).toEqual([generating, preparing, waiting])
+    const init = (fetchImpl.mock.calls[0] as unknown as [unknown, RequestInit])[1]
+    const body = JSON.parse(init.body as string)
+    expect(body.contents[0].parts).toContainEqual({ text: 'Image from message 1' })
+    expect(body.contents[0].parts).toContainEqual({ inlineData: { mimeType: 'image/png', data: 'YWJj' } })
 })

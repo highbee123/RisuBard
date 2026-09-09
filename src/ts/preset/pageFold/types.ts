@@ -31,7 +31,6 @@ export interface PageFoldMetadata {
     structuredOutput?: boolean
     kind?: 'google' | 'openai'
     cacheHit?: boolean
-    recovered?: boolean
     responseTokens?: number | null
     inputSource?: string
     savedTokens?: number | null

@@ -1,3 +1,4 @@
+import { language } from 'src/lang'
 import type { AdapterChatMessage, AdapterChatOptions, AdapterChatResponse, AdapterPreparedRequest } from '../adapter/types'
 import type { ModelPreset, ModelPresetPdfConfig } from '../types'
 import type { PageFoldHost, PageFoldLogEntry, PageFoldMetadata, PageFoldRequestInit, PageFoldStatus } from './types'
@@ -73,18 +74,16 @@ export function resolveModel(preset: ModelPreset): string {
   if (field) {
     const value = preset.userValues?.modelId;
     if (value !== undefined) {
-      if (typeof value !== 'string' || !value.length) throw Error('Model ID를 입력하세요.');
+      if (typeof value !== 'string' || !value.length) throw Error(language.pageFold.modelIdRequired);
       return value;
     }
     if (typeof field.default === 'string' && field.default.length) return field.default;
   }
   return preset?.profileSnapshot?.modelId ?? '';
 }
-function abort(signal?: AbortSignal): void { if (signal?.aborted) throw new DOMException('요청이 중단되었습니다.', 'AbortError'); }
+function abort(signal?: AbortSignal): void { if (signal?.aborted) throw new DOMException(language.pageFold.requestAborted, 'AbortError'); }
 let cachedPdf: { key: string; pdf: Pdf } | undefined;
-const events = new EventTarget();
-export function subscribe(callback: (event: CustomEvent<PageFoldStatus>) => void): () => void { events.addEventListener('status', callback); return () => events.removeEventListener('status', callback); }
-function status(detail: PageFoldStatus): void { events.dispatchEvent(new CustomEvent('status', { detail })); try { host.status?.(detail); } catch {} }
+function status(detail: PageFoldStatus): void { try { host.status?.(detail); } catch {} }
 
 // Preserve structured tool history and its signatures as an untouched suffix.
 function splitMessages(messages: AdapterChatMessage[]): { prefix: AdapterChatMessage[]; tail: AdapterChatMessage[] } {
@@ -98,17 +97,17 @@ export async function prepare<T extends AdapterPreparedRequest>(prepared: T, pre
   const model = state(preset).modelId;
   const messages = options.messages ?? [];
   const { prefix, tail } = splitMessages(messages);
-  if (!prefix.length) throw Error('PDF로 묶을 일반 대화가 없습니다. 이 도구 요청은 PDF 사용을 끄고 실행하세요.');
-  const text = prefix.map((m, i) => ({ role: m.role, content: String(m.content ?? '') + (m.images?.length ? '\n[메시지 ' + (i + 1) + '의 이미지 ' + m.images.length + '개는 별도 첨부됨]' : '') }));
+  if (!prefix.length) throw Error(language.pageFold.noPdfMessages);
+  const text = prefix.map((m, i) => ({ role: m.role, content: String(m.content ?? '') + (m.images?.length ? '\n[' + m.images.length + ' image(s) from message ' + (i + 1) + ' attached separately]' : '') }));
   const packed = packagePrompt(text, cfg.packagingMode, { mergeConsecutiveRoles: cfg.mergeConsecutiveRoles });
-  status({ presetId: preset.id, generationId: options.generationId, phase: 'PDF 생성 중' });
+  status({ presetId: preset.id, generationId: options.generationId, phase: language.pageFold.generating });
   // Exact input comparison avoids collisions in the original 32-bit hash cache.
   const cacheKey = JSON.stringify([packed.pdfTranscript, cfg.fontSize]);
   const cacheHit = cachedPdf?.key === cacheKey;
   let pdf: Pdf;
   if (cacheHit) pdf = cachedPdf.pdf;
   else {
-    pdf = await generateTranscriptPdf(packed.pdfTranscript || '(빈 대화)', { fontSize: cfg.fontSize });
+    pdf = await generateTranscriptPdf(packed.pdfTranscript || '(Empty conversation)', { fontSize: cfg.fontSize });
     if (pdf.bytes.length <= 8 * 1024 * 1024) cachedPdf = { key: cacheKey, pdf };
   }
   abort(options.abortSignal);
@@ -126,14 +125,14 @@ export async function prepare<T extends AdapterPreparedRequest>(prepared: T, pre
     }
     wire.systemInstruction = { parts: [{ text: [packed.systemText, ...tail.filter(m => m.role === 'system').map(m => m.content)].join('\n\n') }] };
     const parts: Record<string, unknown>[] = [{ inlineData: { mimeType: 'application/pdf', data: pdf.base64 } }];
-    for (const img of images) parts.push({ text: '메시지 ' + img.messageIndex + '의 이미지' }, { inlineData: { mimeType: img.mime ?? 'image/png', data: img.base64 } });
+    for (const img of images) parts.push({ text: 'Image from message ' + img.messageIndex }, { inlineData: { mimeType: img.mime ?? 'image/png', data: img.base64 } });
     wire.contents = [{ role: 'user', parts }, ...suffix];
     delete wire.cachedContent;
   } else {
     const original = wire.messages ?? [];
     const suffix = tail.length ? original.slice(prefix.length) : [];
     const content: Record<string, unknown>[] = [{ type: 'file', file: { filename: 'pagefold-context.pdf', file_data: 'data:application/pdf;base64,' + pdf.base64 } }];
-    for (const img of images) content.push({ type: 'text', text: '메시지 ' + img.messageIndex + '의 이미지' }, { type: 'image_url', image_url: { url: 'data:' + (img.mime ?? 'image/png') + ';base64,' + img.base64 } });
+    for (const img of images) content.push({ type: 'text', text: 'Image from message ' + img.messageIndex }, { type: 'image_url', image_url: { url: 'data:' + (img.mime ?? 'image/png') + ';base64,' + img.base64 } });
     wire.messages = [{ role: 'system', content: packed.systemText }, { role: 'user', content }, ...suffix];
     const endpoint = new URL(prepared.url);
     if (endpoint.hostname === 'openrouter.ai' || /openrouter/i.test(preset.profileSnapshot.providerBaseId)) {
@@ -160,7 +159,7 @@ export async function prepare<T extends AdapterPreparedRequest>(prepared: T, pre
     structuredOutput: Boolean(options.responseSchema || wire.response_format || wire.generationConfig?.responseMimeType === 'application/json'), kind,
   };
   if (cfg.inputPrice === null) void discoverPrice(prepared, preset).then(price => { if (price) Object.assign(prepared.__pageFold, { inputPrice: price.price, priceSource: price.source, priceTimestamp: price.at }); });
-  status({ presetId: preset.id, generationId: options.generationId, phase: 'PDF 전송 준비', pages: pdf.pageCount, bytes: pdf.bytes.length, baselineTokens });
+  status({ presetId: preset.id, generationId: options.generationId, phase: language.pageFold.preparing, pages: pdf.pageCount, bytes: pdf.bytes.length, baselineTokens });
   return prepared;
 }
 
@@ -169,7 +168,7 @@ export function wrapFetch(preset: ModelPreset, options: Pick<AdapterChatOptions,
   if (!prepared.__pageFold) return original;
   return async (url, init) => {
     abort(options.abortSignal);
-    status({ presetId: preset.id, generationId: options.generationId, phase: '응답 기다리는 중', pages: prepared.__pageFold.pages });
+    status({ presetId: preset.id, generationId: options.generationId, phase: language.pageFold.waiting, pages: prepared.__pageFold.pages });
     const result = await original(url, { ...init, __pageFold: prepared.__pageFold } as PageFoldRequestInit);
     return result;
   };
@@ -177,15 +176,15 @@ export function wrapFetch(preset: ModelPreset, options: Pick<AdapterChatOptions,
 
 export function sanitize(value: unknown): unknown {
   if (typeof value === 'string') {
-    if (/^data:[^;]+;base64,/i.test(value)) return '[첨부 데이터 생략]';
+    if (/^data:[^;]+;base64,/i.test(value)) return '[Attachment data omitted]';
     return value;
   }
   if (Array.isArray(value)) return value.map(sanitize);
   if (!value || typeof value !== 'object') return value;
   const out: Record<string, unknown> = {};
   for (const [key, item] of Object.entries(value)) {
-    if (/^(authorization|proxy-authorization|x-api-key|x-goog-api-key|api[-_]?key|access[-_]?token|refresh[-_]?token|private[-_]?key|client[-_]?secret|service[-_]?account)$/i.test(key)) out[key] = '[인증정보 제거]';
-    else if (key === 'data' && ((value as Record<string, unknown>).mimeType || (value as Record<string, unknown>).mime_type)) out[key] = '[첨부 데이터 생략]';
+    if (/^(authorization|proxy-authorization|x-api-key|x-goog-api-key|api[-_]?key|access[-_]?token|refresh[-_]?token|private[-_]?key|client[-_]?secret|service[-_]?account)$/i.test(key)) out[key] = '[Credentials redacted]';
+    else if (key === 'data' && ((value as Record<string, unknown>).mimeType || (value as Record<string, unknown>).mime_type)) out[key] = '[Attachment data omitted]';
     else if (!key.startsWith('__pageFold')) out[key] = sanitize(item);
   }
   return out;
@@ -221,7 +220,7 @@ export function finalizeLogs<T extends PageFoldLogEntry>(entries: T[], saveBodie
     } else {
       delete entry.requestBody; delete entry.responseBody; delete entry.requestHeaders; delete pf.pdfContent;
     }
-    status({ presetId: pf.presetId, generationId: pf.generationId, phase: entry.aborted ? '중단' : entry.success ? '완료' : '실패', pages: pf.pages, bytes: pf.bytes, baselineTokens: pf.baselineTokens, savedTokens: pf.savedTokens, inputTokens: entry.inputTokens });
+    status({ presetId: pf.presetId, generationId: pf.generationId, phase: entry.aborted ? language.pageFold.aborted : entry.success ? language.pageFold.completed : language.pageFold.failed, pages: pf.pages, bytes: pf.bytes, baselineTokens: pf.baselineTokens, savedTokens: pf.savedTokens, inputTokens: entry.inputTokens });
   }
   return entries;
 }
@@ -230,7 +229,7 @@ export function finite(v: unknown): number | null { return typeof v === 'number'
 export async function api<T = unknown>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = await host.authHeaders!();
   const response = await fetch('/api/request-logs/pagefold' + path, { ...init, headers: { ...headers, 'Content-Type': 'application/json', ...init.headers } });
-  if (!response.ok) throw Error(response.status === 404 ? '서버를 다시 시작하면 PDF 통계가 활성화됩니다.' : 'PDF 통계를 불러오지 못했습니다. (' + response.status + ')');
+  if (!response.ok) throw Error(response.status === 404 ? language.pageFold.statsRestart : language.pageFold.statsLoadFailed.replace('{0}', String(response.status)));
   return response.json();
 }
 

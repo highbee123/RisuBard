@@ -1,6 +1,6 @@
 <script lang="ts">
     import { language } from 'src/lang'
-    let { total, compact = false }: { total: Record<string, number>, compact?: boolean } = $props()
+    let { total }: { total: Record<string, number> } = $props()
     const l = language.pageFold
     const n = (v: unknown) => typeof v === 'number' && Number.isFinite(v) ? v.toLocaleString(undefined, { maximumFractionDigits: 1 }) : '—'
     const cards = $derived([
@@ -19,17 +19,13 @@
 {#if !total.requests}
     <p class="text-sm text-textcolor2 py-2">{l.empty}</p>
 {:else}
-    {#if compact}
-        <p class="text-xs text-textcolor2 leading-relaxed">{cards.map(([label, value]) => `${label}: ${value}`).join(' · ')}</p>
-    {:else}
-        <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
-            {#each cards as [label, value]}
-                <div class="border border-darkborderc rounded-md bg-darkbg/30 p-3">
-                    <div class="text-textcolor2 text-xs mb-1">{label}</div>
-                    <div class="text-textcolor text-2xl font-semibold tabular-nums">{value}</div>
-                </div>
-            {/each}
-        </div>
-    {/if}
+    <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
+        {#each cards as [label, value]}
+            <div class="border border-darkborderc rounded-md bg-darkbg/30 p-3">
+                <div class="text-textcolor2 text-xs mb-1">{label}</div>
+                <div class="text-textcolor text-2xl font-semibold tabular-nums">{value}</div>
+            </div>
+        {/each}
+    </div>
     <p class="text-xs text-textcolor2 leading-relaxed">{details.map(([label, value]) => `${label}: ${value}`).join(' · ')}</p>
 {/if}

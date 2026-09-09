@@ -52,11 +52,12 @@ it('loads preset statistics and opens the selected request detail using the shar
     const record = { id: 1, timestamp: 1, model: 'gemini-demo', success: true, inputTokens: 20, outputTokens: 10, pageFold: { pages: 1, baselineTokens: 100, savedTokens: 80, pdfContent: 'PDF transcript' } }
     const fetchMock = vi.fn(async (url: string) => new Response(JSON.stringify(url.endsWith('/1')
         ? { content: { ...record, requestBody: '{"request":true}', responseBody: '{"response":true}' } }
-        : { total: { requests: 1, userRequests: 1, comparableRequests: 1, savedTokens: 80, baselineTokens: 100 }, rows: [record], byModel: [], daily: [], filters: { presets: [], models: [], providers: [], sources: [] } })))
+        : { total: { requests: 1, userRequests: 1, comparableRequests: 1, savedTokens: 80, baselineTokens: 100 }, rows: [record], byModel: [], daily: [], filters: { presets: [], models: [] } })))
     vi.stubGlobal('fetch', fetchMock)
     mounted = mount(PageFoldStats, { target: document.body, props: { open: true, presetId: 'p' } })
     await vi.waitFor(() => expect(document.body.textContent).toContain('gemini-demo'))
     expect(fetchMock.mock.calls[0][0]).toContain('preset=p')
+    expect([...document.querySelectorAll('th')].map(th => th.textContent)).toContain(language.pageFold.pages)
     const detail = [...document.querySelectorAll<HTMLButtonElement>('button')].find(b => b.textContent?.trim() === language.pageFold.detail)!
     detail.click()
     await vi.waitFor(() => expect(fetchMock.mock.calls.some(([url]) => url.endsWith('/1'))).toBe(true))
