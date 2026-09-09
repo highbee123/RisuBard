@@ -1,6 +1,7 @@
 import { changeLanguage } from 'src/lang'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { configure, state, prepare, finalizeLogs, sanitize, wrapFetch } from './runtime'
+import { configure, state, prepare, finalizeLogs, sanitize, wrapFetch, settlePrices } from './runtime'
+import { sendWithStructuredOutputFallback } from '../../process/request/structuredOutputFallback'
 import { generateTranscriptPdf, packagePrompt } from './vendor.mjs'
 import { sendGoogleChatRequest, streamGoogleChatRequest } from '../adapter/googleGemini'
 import { sendChatRequest } from '../adapter/openaiCompatible'
@@ -106,7 +107,7 @@ function captureFetch(response: Response | (() => Response)): {
 }
 
 beforeEach(() => configure({}))
-afterEach(() => changeLanguage('en'))
+afterEach(() => { changeLanguage('en'); vi.useRealTimers() })
 describe('PageFold preset eligibility and wire behavior', () => {
     it('uses the effective model ID, never the display name; stale flags cannot enable non-Gemini', () => {
         const p = preset('claude'); p.name = 'Gemini'; expect(state(p).active).toBe(false)
@@ -352,4 +353,113 @@ it.each(['maximum', 'balanced'] as const)('describes partial PDFs in %s mode wit
         expect(partial.__pageFold.pdfContent).toBe(full.__pageFold.pdfContent)
         if (mode === 'balanced') expect(instruction).toContain('시스템 지시')
     }
+})
+
+it.each([true, false])('preserves JSON through the native schema retry with PDF enabled=%s', async enabled => {
+    const p = preset('gemini-json-retry', enabled)
+    const text = JSON.stringify({ text: 'first\nsecond', path: 'C:\\new\\note.txt' })
+    const calls: RequestInit[] = []
+    const fetchImpl: typeof fetch = async (_url, init) => {
+        calls.push(init!)
+        return calls.length === 1
+            ? jsonResponse({ error: { message: 'responseSchema unsupported', status: 'INVALID_ARGUMENT' } }, { status: 400 })
+            : jsonResponse({ candidates: [{ content: { parts: [{ text }] } }] })
+    }
+    const result = await sendWithStructuredOutputFallback({
+        messages, responseSchema: { type: 'object' }, fetchImpl,
+        ...(enabled ? { pageFold: { structuredOutput: true } } : {}),
+    }, options => sendGoogleChatRequest(p, options, { apiKey: 'k' }))
+    expect(result.text).toBe(text)
+    expect(JSON.parse(result.text)).toEqual(JSON.parse(text))
+    expect(calls).toHaveLength(2)
+    expect(JSON.parse(calls[1].body as string).generationConfig.responseSchema).toBeUndefined()
+    expect((calls[1] as any).__pageFold?.structuredOutput).toBe(enabled ? true : undefined)
+    expect(JSON.stringify(JSON.parse(calls[1].body as string))).not.toContain('structuredOutput')
+})
+
+it.each([true, false])('starts catalog GET only on transport and settles prices before accounting, PDF=%s', async enabled => {
+    const p = preset('gemini-price-' + enabled, enabled)
+    p.pageFold.inputPrice = null
+    let complete!: (response: Response) => void
+    const priceFetch = vi.fn(() => new Promise<Response>(resolve => { complete = resolve }))
+    configure({ priceFetch })
+    const prepared: AdapterPreparedRequest = await prepare({ method: 'POST', url: 'https://openrouter.ai/api/v1/chat/completions', headers: {}, body: {} }, p, { messages }, 'openai')
+    expect(priceFetch).not.toHaveBeenCalled()
+    const original = vi.fn(async () => response())
+    const transport = wrapFetch(p, {}, prepared, original)
+    if (!enabled) expect(transport).toBe(original)
+    await transport(prepared.url, { method: 'POST', headers: prepared.headers })
+    const row: any = { success: true, inputTokens: 0, pageFold: prepared.__pageFold }
+    if (enabled) {
+        expect(priceFetch).toHaveBeenCalledWith('https://openrouter.ai/api/v1/models', expect.objectContaining({ method: 'GET' }))
+        let settled = false
+        const pending = settlePrices([row]).then(() => { settled = true })
+        await Promise.resolve()
+        expect(settled).toBe(false)
+        complete(jsonResponse({ data: [{ id: p.profileSnapshot.modelId, pricing: { prompt: '0.000001' } }] }))
+        await pending
+        finalizeLogs([row], true)
+        expect(row.pageFold.inputPrice).toBe(1)
+        expect(row.pageFold.savedUsd).toBe(row.pageFold.savedTokens / 1e6)
+    } else {
+        expect(priceFetch).not.toHaveBeenCalled()
+        const before = structuredClone(row)
+        await settlePrices([row])
+        finalizeLogs([row], true)
+        expect(row).toEqual(before)
+    }
+})
+
+it('bounds price settlement and does not apply a late price after timeout', async () => {
+    vi.useFakeTimers()
+    const p = preset('gemini-price-timeout'); p.pageFold.inputPrice = null
+    let complete!: (response: Response) => void
+    configure({ priceFetch: () => new Promise<Response>(resolve => { complete = resolve }) })
+    const prepared: AdapterPreparedRequest = await prepare({ method: 'POST', url: 'https://openrouter.ai/api/v1/chat/completions', headers: {}, body: {} }, p, { messages }, 'openai')
+    await wrapFetch(p, {}, prepared, async () => response())(prepared.url)
+    const row: any = { success: true, inputTokens: 0, pageFold: prepared.__pageFold }
+    const pending = settlePrices([row])
+    await vi.advanceTimersByTimeAsync(5000)
+    await pending
+    finalizeLogs([row], true)
+    expect(row.pageFold.savedUsd).toBeNull()
+    complete(jsonResponse({ data: [{ id: p.profileSnapshot.modelId, pricing: { prompt: '0.000001' } }] }))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(row.pageFold.inputPrice).toBeNull()
+    expect(row.pageFold.savedUsd).toBeNull()
+})
+
+it.each([true, false])('records Google and Vertex service tiers without altering their wire settings, PDF=%s', async enabled => {
+    for (const wire of [
+        { headers: {}, body: { serviceTier: 'flex' } },
+        { headers: { 'X-Vertex-AI-LLM-Request-Type': 'shared', 'X-Vertex-AI-LLM-Shared-Request-Type': 'flex' }, body: {} },
+    ]) {
+        const input: AdapterPreparedRequest = { method: 'POST', url: 'https://example.test', ...wire }
+        const prepared = await prepare(input, preset('gemini-tier', enabled), { messages }, 'google')
+        expect(prepared.__pageFold?.requestedServiceTier).toBe(enabled ? 'flex' : undefined)
+        expect(prepared.headers).toEqual(wire.headers)
+        expect(prepared.body.serviceTier).toBe(wire.body.serviceTier)
+        if (!enabled) expect(prepared).toBe(input)
+    }
+})
+
+it('ignores null and malformed log frames without inventing a generation failure', () => {
+    const rows: any[] = ['null', 'data: null\n\ndata: [DONE]\n\ndata: {truncated', '{"usageMetadata":{"promptTokenCount":20}}'].map(responseBody => ({
+        success: true, responseBody, pageFold: { version: 1, comparable: true, baselineTokens: 100, inputPrice: 1 },
+    }))
+    const normal = { success: true, responseBody: 'null' }
+    rows.unshift(normal)
+    expect(() => finalizeLogs(rows, true)).not.toThrow()
+    expect(rows.every(row => row.success)).toBe(true)
+    expect(rows.at(-1).pageFold.savedTokens).toBe(80)
+    expect(normal).toEqual({ success: true, responseBody: 'null' })
+})
+
+it('isolates a damaged PDF log record from subsequent records', () => {
+    const damaged: any = { success: true, pageFold: { version: 1 }, get responseBody() { throw Error('damaged record') } }
+    const valid: any = { success: true, inputTokens: 20, pageFold: { version: 1, comparable: true, baselineTokens: 100, inputPrice: 1 } }
+    expect(() => finalizeLogs([damaged, valid], false)).not.toThrow()
+    expect(damaged.success).toBe(true)
+    expect(damaged.pageFold.savedTokens).toBeNull()
+    expect(valid.pageFold.savedTokens).toBe(80)
 })

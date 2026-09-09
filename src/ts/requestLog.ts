@@ -1,5 +1,5 @@
 import type { PageFoldMetadata, PageFoldRequestInit } from './preset/pageFold/types'
-import { finalizeLogs as finalizePageFoldLogs, sanitizeBody as sanitizePageFoldBody } from './preset/pageFold/runtime'
+import { finalizeLogs as finalizePageFoldLogs, settlePrices as settlePageFoldPrices, sanitizeBody as sanitizePageFoldBody } from './preset/pageFold/runtime'
 // Client-side collection for the server request log (save/request-logs.db).
 //
 // Replaces the old in-memory `fetchLog` array in globalApi.svelte.ts, which
@@ -199,7 +199,9 @@ async function send(entries: PendingEntry[]): Promise<void> {
 /** Fire-and-forget single entry, for call sites that are not scope-shaped. */
 export function recordRequestLog(entry: Omit<PendingEntry, 'clientId'>): void {
     if (!requestLogEnabled() && !entry.pageFold) return
-    void send(finalizePageFoldLogs([{ ...entry, clientId: getClientId() }], requestLogEnabled()))
+    const entries = [{ ...entry, clientId: getClientId() }]
+    if (!entry.pageFold) { void send(entries); return }
+    void settlePageFoldPrices(entries).then(() => send(finalizePageFoldLogs(entries, requestLogEnabled())))
 }
 
 // ─── Reading back ────────────────────────────────────────────────────────────
@@ -527,6 +529,7 @@ export function createRequestLogScope(init: RequestLogScopeInit): RequestLogScop
             }
             if (!overflowed) text += decoder.decode()
         } catch (err) {
+            if (entry.pageFold) entry.success = false
             entry.errorMessage ??= (err as Error)?.message ?? String(err)
         } finally {
             if (onAbort) signal?.removeEventListener('abort', onAbort)
@@ -594,6 +597,7 @@ export function createRequestLogScope(init: RequestLogScopeInit): RequestLogScop
             if (settling.length > 0) {
                 await Promise.allSettled(settling)
             }
+            if (entries.some(entry => entry.pageFold)) await settlePageFoldPrices(entries)
             await send(finalizePageFoldLogs(entries, requestLogEnabled()))
         },
     }

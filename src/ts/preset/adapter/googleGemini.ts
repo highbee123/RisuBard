@@ -244,6 +244,7 @@ export async function* streamGoogleChatRequest(
         if (finalText) yield { textDelta: finalText, raw: {} }
         cacheTurn?.finish(lastUsage?.promptTokens)
     } catch (err) {
+        pageFold.markFailed(prepared, err)
         if (err instanceof ModelPresetAdapterError) throw err
         throw normalizeFetchError(err)
     }

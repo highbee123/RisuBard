@@ -15,6 +15,7 @@ interface PageFoldWireBody extends Record<string, unknown> {
   plugins?: (Record<string, unknown> & { id?: string })[]
   stream_options?: Record<string, unknown>
   service_tier?: string
+  serviceTier?: string
   reasoning_effort?: string
   reasoning?: { effort?: string }
 }
@@ -24,14 +25,14 @@ interface UsageFields {
   thoughtsTokenCount?: unknown; completion_tokens_details?: { reasoning_tokens?: unknown }
   cost?: unknown
 }
-interface UsageFrame { service_tier?: string; usageMetadata?: UsageFields; usage?: UsageFields }
+interface UsageFrame { error?: unknown; service_tier?: string; usageMetadata?: UsageFields; usage?: UsageFields }
 type Pdf = Awaited<ReturnType<typeof generateTranscriptPdf>>
 type DisplayRequest = { __pageFold?: Pick<PageFoldMetadata, 'structuredOutput'> }
 interface NewlineRestorer { push: (text: string) => string; flush: () => string }
 
 let host: PageFoldHost = {};
 const priceCache = new Map<string, DiscoveredPrice>();
-export async function discoverPrice(prepared: AdapterPreparedRequest, preset: ModelPreset): Promise<DiscoveredPrice | null> {
+export async function discoverPrice(prepared: Pick<AdapterPreparedRequest, 'url' | 'headers'>, preset: ModelPreset): Promise<DiscoveredPrice | null> {
   const url = new URL(prepared.url);
   const gateway = url.hostname === 'openrouter.ai' || ['vercel', 'llmgateway'].includes(preset.profileSnapshot?.providerBaseId);
   if (!gateway || !/\/chat\/completions\/?$/.test(url.pathname)) return null;
@@ -41,16 +42,24 @@ export async function discoverPrice(prepared: AdapterPreparedRequest, preset: Mo
   const key = catalog.href + ':' + model;
   const cached = priceCache.get(key);
   if (cached && Date.now() - cached.at < 3600000) return cached;
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout>;
   try {
-    const response = await (host.priceFetch ?? fetch)(catalog.href, { headers, signal: AbortSignal.timeout(5000) });
-    if (!response.ok) return null;
-    const data: PriceCatalog = await response.json();
-    const entry = data.data?.find(m => m.id === model);
-    const raw = entry?.pricing?.prompt;
-    if (raw == null || raw === '' || !Number.isFinite(Number(raw)) || Number(raw) < 0) return null;
-    const value = { price: Number(raw) * 1e6, at: Date.now(), source: catalog.origin + '/models' };
-    priceCache.set(key, value); return value;
+    return await Promise.race([
+      (async (): Promise<DiscoveredPrice | null> => {
+        const response = await (host.priceFetch ?? fetch)(catalog.href, { method: 'GET', headers, signal: controller.signal });
+        if (!response.ok) return null;
+        const data: PriceCatalog = await response.json();
+        const entry = data.data?.find(m => m.id === model);
+        const raw = entry?.pricing?.prompt;
+        if (controller.signal.aborted || raw == null || raw === '' || !Number.isFinite(Number(raw)) || Number(raw) < 0) return null;
+        const value = { price: Number(raw) * 1e6, at: Date.now(), source: catalog.origin + '/models' };
+        priceCache.set(key, value); return value;
+      })(),
+      new Promise<null>(resolve => { timer = setTimeout(() => { controller.abort(); resolve(null); }, 5000); }),
+    ]);
   } catch { return null; }
+  finally { clearTimeout(timer); }
 }
 export function configure(value: PageFoldHost): void { host = value; }
 export function config(preset: ModelPreset): ModelPresetPdfConfig {
@@ -162,14 +171,31 @@ export async function prepare<T extends AdapterPreparedRequest>(prepared: T, pre
     baselineTokens,
     baselineSource, comparable, inputPrice: cfg.inputPrice,
     priceSource: cfg.inputPrice == null ? null : 'manual', priceTimestamp: cfg.inputPrice == null ? null : Date.now(), currency: 'USD',
-    requestedServiceTier: wire.service_tier ?? headers.get('x-vertex-ai-llm-request-type') ?? null,
+    requestedServiceTier: wire.service_tier ?? wire.serviceTier ?? headers.get('x-vertex-ai-llm-shared-request-type') ?? headers.get('x-vertex-ai-llm-request-type') ?? null,
     reasoningEffort: wire.reasoning_effort ?? wire.reasoning?.effort ?? wire.generationConfig?.thinkingConfig?.thinkingLevel ?? null,
     thinkingBudget: wire.generationConfig?.thinkingConfig?.thinkingBudget ?? null, pdfContent: packed.pdfTranscript,
-    structuredOutput: Boolean(options.responseSchema || wire.response_format || wire.generationConfig?.responseMimeType === 'application/json'), kind,
+    structuredOutput: Boolean(options.pageFold?.structuredOutput || options.responseSchema || wire.response_format || wire.generationConfig?.responseMimeType === 'application/json'), kind,
   };
-  if (cfg.inputPrice === null) void discoverPrice(prepared, preset).then(price => { if (price) Object.assign(prepared.__pageFold, { inputPrice: price.price, priceSource: price.source, priceTimestamp: price.at }); });
   status({ presetId: preset.id, generationId: options.generationId, phase: language.pageFold.preparing, pages: pdf.pageCount, bytes: pdf.bytes.length, baselineTokens });
   return prepared;
+}
+
+// Per-attempt state stays local; only settled prices and existing log fields are persisted.
+const pendingPrices = new WeakMap<PageFoldMetadata, Promise<DiscoveredPrice | null>>();
+const attemptFailures = new WeakMap<PageFoldMetadata, string>();
+export function markFailed(prepared: Pick<AdapterPreparedRequest, '__pageFold'>, error: unknown): void {
+  if (prepared.__pageFold) attemptFailures.set(prepared.__pageFold, error instanceof Error ? error.message : String(error));
+}
+export async function settlePrices(entries: PageFoldLogEntry[]): Promise<void> {
+  await Promise.all(entries.map(async entry => {
+    const pf = entry.pageFold;
+    if (!pf) return;
+    const pending = pendingPrices.get(pf);
+    if (!pending) return;
+    const price = await pending;
+    if (price) Object.assign(pf, { inputPrice: price.price, priceSource: price.source, priceTimestamp: price.at });
+    pendingPrices.delete(pf);
+  }));
 }
 
 // Add metadata to RequestInit (not the provider body); the native log collector consumes it.
@@ -178,6 +204,9 @@ export function wrapFetch(preset: ModelPreset, options: Pick<AdapterChatOptions,
   return async (url, init) => {
     abort(options.abortSignal);
     status({ presetId: preset.id, generationId: options.generationId, phase: language.pageFold.waiting, pages: prepared.__pageFold.pages });
+    if (prepared.__pageFold.inputPrice == null && !pendingPrices.has(prepared.__pageFold)) {
+      pendingPrices.set(prepared.__pageFold, discoverPrice({ url: String(url), headers: Object.fromEntries(new Headers(init?.headers)) }, preset));
+    }
     const result = await original(url, { ...init, __pageFold: prepared.__pageFold } as PageFoldRequestInit);
     return result;
   };
@@ -203,33 +232,47 @@ export function finalizeLogs<T extends PageFoldLogEntry>(entries: T[], saveBodie
   for (const entry of entries) {
     if (!entry.pageFold) continue;
     const pf = entry.pageFold;
-    pf.responseTokens = null;
-    let frames: UsageFrame[] = [], googleUsage = false, googleResponseTokens: number | null = null;
-    try { frames = [JSON.parse(entry.responseBody)]; } catch {
-      frames = String(entry.responseBody ?? '').split(/\r?\n/).filter(s => s.startsWith('data:')).flatMap(s => { try { return [JSON.parse(s.slice(5))]; } catch { return []; } });
+    try {
+      const failure = attemptFailures.get(pf);
+      if (failure) { entry.success = false; entry.errorMessage ??= failure; }
+      pf.responseTokens = null;
+      let frames: UsageFrame[] = [], googleUsage = false, googleResponseTokens: number | null = null;
+      try { frames = [JSON.parse(entry.responseBody)]; } catch {
+        frames = String(entry.responseBody ?? '').split(/\r?\n/).filter(s => s.startsWith('data:')).flatMap(s => { try { return [JSON.parse(s.slice(5))]; } catch { return []; } });
+      }
+      for (const frame of frames) {
+        if (!frame || typeof frame !== 'object' || Array.isArray(frame)) continue;
+        if (frame.error) {
+          entry.success = false;
+          entry.errorMessage ??= typeof frame.error === 'object' && 'message' in frame.error ? String(frame.error.message) : 'Provider stream error';
+        }
+        pf.servedServiceTier = frame.service_tier ?? pf.servedServiceTier;
+        const u = frame.usageMetadata ?? frame.usage;
+        if (frame.usageMetadata) { googleUsage = true; googleResponseTokens = finite(u.candidatesTokenCount) ?? googleResponseTokens; }
+        if (!u) continue;
+        entry.inputTokens = finite(u.promptTokenCount ?? u.prompt_tokens) ?? entry.inputTokens;
+        entry.outputTokens = (frame.usageMetadata ? finite(u.candidatesTokenCount) : finite(u.completion_tokens)) ?? entry.outputTokens;
+        entry.reasoningTokens = finite(u.thoughtsTokenCount ?? u.completion_tokens_details?.reasoning_tokens) ?? entry.reasoningTokens;
+        pf.actualCost = finite(u.cost) ?? pf.actualCost;
+        pf.servedServiceTier = frame.service_tier ?? pf.servedServiceTier;
+      }
+      pf.responseTokens = googleUsage ? googleResponseTokens : pf.kind === 'google' ? finite(entry.outputTokens) : finite(entry.outputTokens) === null ? null : Math.max(0, entry.outputTokens - (entry.reasoningTokens ?? 0));
+      pf.inputSource = finite(entry.inputTokens) === null ? 'unavailable' : 'provider';
+      pf.savedTokens = entry.success && pf.comparable && finite(entry.inputTokens) !== null ? pf.baselineTokens - entry.inputTokens : null;
+      pf.savedUsd = pf.savedTokens !== null && finite(pf.inputPrice) !== null ? pf.savedTokens * pf.inputPrice / 1e6 : null;
+      if (saveBodies) {
+        entry.requestBody = sanitizeBody(entry.requestBody);
+        entry.responseBody = sanitizeBody(entry.responseBody);
+      }
+      status({ presetId: pf.presetId, generationId: pf.generationId, phase: entry.aborted ? language.pageFold.aborted : entry.success ? language.pageFold.completed : language.pageFold.failed, pages: pf.pages, bytes: pf.bytes, baselineTokens: pf.baselineTokens, savedTokens: pf.savedTokens, inputTokens: entry.inputTokens });
+    } catch {
+      pf.savedTokens = null; pf.savedUsd = null;
+      entry.errorMessage ??= 'PDF log processing failed';
+    } finally {
+      if (!saveBodies) {
+        delete entry.requestBody; delete entry.responseBody; delete entry.requestHeaders; delete pf.pdfContent;
+      }
     }
-    for (const frame of frames) {
-      pf.servedServiceTier = frame.service_tier ?? pf.servedServiceTier;
-      const u = frame.usageMetadata ?? frame.usage;
-      if (frame.usageMetadata) { googleUsage = true; googleResponseTokens = finite(u.candidatesTokenCount) ?? googleResponseTokens; }
-      if (!u) continue;
-      entry.inputTokens = finite(u.promptTokenCount ?? u.prompt_tokens) ?? entry.inputTokens;
-      entry.outputTokens = (frame.usageMetadata ? finite(u.candidatesTokenCount) : finite(u.completion_tokens)) ?? entry.outputTokens;
-      entry.reasoningTokens = finite(u.thoughtsTokenCount ?? u.completion_tokens_details?.reasoning_tokens) ?? entry.reasoningTokens;
-      pf.actualCost = finite(u.cost) ?? pf.actualCost;
-      pf.servedServiceTier = frame.service_tier ?? pf.servedServiceTier;
-    }
-    pf.responseTokens = googleUsage ? googleResponseTokens : pf.kind === 'google' ? finite(entry.outputTokens) : finite(entry.outputTokens) === null ? null : Math.max(0, entry.outputTokens - (entry.reasoningTokens ?? 0));
-    pf.inputSource = finite(entry.inputTokens) === null ? 'unavailable' : 'provider';
-    pf.savedTokens = entry.success && pf.comparable && finite(entry.inputTokens) !== null ? pf.baselineTokens - entry.inputTokens : null;
-    pf.savedUsd = pf.savedTokens !== null && finite(pf.inputPrice) !== null ? pf.savedTokens * pf.inputPrice / 1e6 : null;
-    if (saveBodies) {
-      entry.requestBody = sanitizeBody(entry.requestBody);
-      entry.responseBody = sanitizeBody(entry.responseBody);
-    } else {
-      delete entry.requestBody; delete entry.responseBody; delete entry.requestHeaders; delete pf.pdfContent;
-    }
-    status({ presetId: pf.presetId, generationId: pf.generationId, phase: entry.aborted ? language.pageFold.aborted : entry.success ? language.pageFold.completed : language.pageFold.failed, pages: pf.pages, bytes: pf.bytes, baselineTokens: pf.baselineTokens, savedTokens: pf.savedTokens, inputTokens: entry.inputTokens });
   }
   return entries;
 }

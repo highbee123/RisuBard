@@ -62,6 +62,6 @@ export interface PageFoldHost {
 }
 
 export interface PageFoldLogEntry extends RequestLogUsage,
-    Partial<Pick<RequestLogEntry, 'success' | 'aborted' | 'requestBody' | 'responseBody' | 'requestHeaders'>> {
+    Partial<Pick<RequestLogEntry, 'success' | 'aborted' | 'errorMessage' | 'requestBody' | 'responseBody' | 'requestHeaders'>> {
     pageFold?: PageFoldMetadata
 }

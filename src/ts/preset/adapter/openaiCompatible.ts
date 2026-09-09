@@ -162,6 +162,7 @@ export async function* streamChatRequest(
         const finalText = restoreText.flush()
         if (finalText) yield { textDelta: finalText, raw: {} }
     } catch (err) {
+        pageFold.markFailed(prepared, err)
         // Intentional domain errors (parse, etc.) pass through;
         // fetch/abort/network failures during stream body read get normalized.
         if (err instanceof ModelPresetAdapterError) throw err

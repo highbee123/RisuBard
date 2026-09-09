@@ -1050,6 +1050,7 @@ async function requestModelPreset(arg:RequestDataArgumentExtended, preset:ModelP
         const options: AdapterChatOptions = {
             messages, abortSignal: abortSignal ?? undefined, fetchImpl, generationId: genId, cache,
             ...presetGenerationOverrides(arg),
+            ...(pageFold.state(preset).active && arg.schema ? { pageFold: { structuredOutput: true } } : {}),
             responseSchema: arg.schema
                 ? convertInterfaceToSchema(arg.schema)
                 : undefined,

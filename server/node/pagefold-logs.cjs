@@ -53,7 +53,7 @@ function register(app, { guard, sessionGuard, getRequests, getUsage, replace }) 
     try {
       const all = getUsage().filter(r => r.pageFold);
       const usage = all.filter(r => matches(r, req.query));
-      if (req.query.export === '1') return res.json({ format: 'risubard-pagefold-logs', version: 1, exportedAt: new Date().toISOString(), logs: clean(getRequests().filter(r => r.pageFold)) });
+      if (req.query.export === '1') return res.json({ format: 'risubard-pagefold-logs', version: 1, exportedAt: new Date().toISOString(), logs: getRequests().filter(r => r.pageFold).map(clean) });
       const groups = new Map();
       for (const r of usage) { const key = JSON.stringify([r.model, r.provider]); if (!groups.has(key)) groups.set(key, []); groups.get(key).push(r); }
       const rows = usage.filter(r => !Number(req.query.before) || r.id < Number(req.query.before)).sort((a,b) => b.id-a.id).slice(0, 50).map(r => { const out = { ...r, pageFold: { ...r.pageFold } }; delete out.pageFold.pdfContent; delete out.requestBody; delete out.responseBody; delete out.requestHeaders; return out; });

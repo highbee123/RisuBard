@@ -186,6 +186,8 @@ export interface AdapterCacheContext {
 }
 
 export interface AdapterChatOptions {
+    /** PDF response intent survives native-schema fallback; never sent to the provider. */
+    pageFold?: Pick<PageFoldMetadata, 'structuredOutput'>
     messages: AdapterChatMessage[]
     tools?: AdapterToolDef[]             // when present, enables tool use on the request
     /** Authoritative per-call sampling controls. */

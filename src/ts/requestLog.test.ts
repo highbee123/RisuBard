@@ -427,3 +427,76 @@ describe('createRequestLogScope', () => {
         expect(posted).toHaveLength(0)
     })
 })
+
+it.each([['google', true], ['google', false], ['openai', true], ['openai', false]] as const)('keeps %s stream error accounting local to each PDF attempt, enabled=%s', async (kind, enabled) => {
+    const { configure } = await import('./preset/pageFold/runtime')
+    const { streamGoogleChatRequest } = await import('./preset/adapter/googleGemini')
+    const { streamChatRequest } = await import('./preset/adapter/openaiCompatible')
+    configure({})
+    const preset: any = {
+        id: 'pdf-stream', name: 'PDF', userValues: {}, pageFold: { enabled, inputPrice: 1 },
+        profileSnapshot: { modelId: 'gemini-test', adapterKind: 'google-gemini', providerBaseId: 'google',
+            auth: { kind: 'x-goog-api-key', fields: ['apiKey'] },
+            endpoint: { kind: 'static', url: 'https://example.test/v1beta/models' }, schema: [], defaults: {} },
+    }
+    const scope = createRequestLogScope({ category: 'llm', source: 'main', pageFold: enabled })
+    const usage = kind === 'google'
+        ? 'data: {"usageMetadata":{"promptTokenCount":20,"candidatesTokenCount":3,"thoughtsTokenCount":2}}\n\n'
+        : 'data: {"usage":{"prompt_tokens":20,"completion_tokens":3,"completion_tokens_details":{"reasoning_tokens":2}}}\n\n'
+    let attempt = 0
+    const fetchImpl = scope.wrap(async () => new Response(streamOf([
+        usage, ++attempt === 1 ? 'data: {broken-json\n\n' : 'data: {"candidates":[{"content":{"parts":[{"text":"OK"}]},"finishReason":"STOP"}]}\n\n',
+    ]), { headers: { 'content-type': 'text/event-stream' } }))
+    const send = async () => {
+        const stream = kind === 'google' ? streamGoogleChatRequest : streamChatRequest
+        for await (const _ of stream(preset, { messages: [{ role: 'user', content: 'hello' }], fetchImpl }, { apiKey: 'k' })) { /* drain */ }
+    }
+    await expect(send()).rejects.toThrow()
+    await send()
+    await scope.close()
+    const rows = posted.flat()
+    expect(rows).toHaveLength(2)
+    expect(rows[0].success).toBe(!enabled)
+    expect(rows[1].success).toBe(true)
+    if (enabled) {
+        expect(rows[0].inputTokens).toBe(20)
+        expect(rows[0].reasoningTokens).toBe(2)
+        expect(rows[0].pageFold.savedTokens).toBeNull()
+        expect(rows[1].pageFold.savedTokens).not.toBeNull()
+        expect(rows[0].pageFold.requestId).not.toBe(rows[1].pageFold.requestId)
+    } else expect(rows.every(row => !row.pageFold)).toBe(true)
+})
+
+it('records explicit provider stream errors without discarding reported usage', async () => {
+    const scope = createRequestLogScope({ category: 'llm', source: 'main', pageFold: true })
+    const wrapped = scope.wrap(async () => new Response(streamOf([
+        'data: {"usage":{"prompt_tokens":20,"completion_tokens":3}}\n\n',
+        'data: {"error":{"message":"stream failed"}}\n\n',
+    ]), { headers: { 'content-type': 'text/event-stream' } }))
+    await (await wrapped('https://example.test', { method: 'POST', __pageFold: { version: 1, comparable: true, baselineTokens: 100, inputPrice: 1 } } as any)).text()
+    await scope.close()
+    const row = posted.flat()[0]
+    expect(row.success).toBe(false)
+    expect(row.errorMessage).toBe('stream failed')
+    expect(row.inputTokens).toBe(20)
+    expect(row.outputTokens).toBe(3)
+    expect(row.pageFold.savedTokens).toBeNull()
+})
+
+it('waits for the in-flight PDF price before posting the completed log', async () => {
+    const { configure, wrapFetch } = await import('./preset/pageFold/runtime')
+    let complete!: (response: Response) => void
+    configure({ priceFetch: () => new Promise<Response>(resolve => { complete = resolve }) })
+    const scope = createRequestLogScope({ category: 'llm', source: 'main', pageFold: true })
+    const p: any = { id: 'price-scope', profileSnapshot: { modelId: 'gemini-price-scope' } }
+    const metadata: any = { version: 1, comparable: true, baselineTokens: 100, inputPrice: null }
+    const wrapped = wrapFetch(p, {}, { __pageFold: metadata }, scope.wrap(async () => jsonResponse('{"usage":{"prompt_tokens":20}}')))
+    await (await wrapped('https://openrouter.ai/api/v1/chat/completions', { method: 'POST' })).text()
+    const closing = scope.close()
+    await Promise.resolve()
+    expect(posted).toHaveLength(0)
+    complete(jsonResponse('{"data":[{"id":"gemini-price-scope","pricing":{"prompt":"0.000001"}}]}'))
+    await closing
+    expect(posted.flat()[0].pageFold).toMatchObject({ inputPrice: 1, savedTokens: 80, savedUsd: 0.00008 })
+    configure({})
+})

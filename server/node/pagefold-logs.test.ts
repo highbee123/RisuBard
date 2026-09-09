@@ -69,3 +69,22 @@ it('filters statistics but exports all saved PDF logs and resets all PDF records
         expect((await (await fetch(url)).json()).rows).toHaveLength(0)
     } finally { server.closeAllConnections(); await new Promise<void>(resolve=>server.close(()=>resolve())) }
 })
+
+it('exports more than 1000 saved PDF records with redaction on every record', async () => {
+    const { logs } = setup()
+    const entries = Array.from({ length: 1002 }, (_, index) => ({
+        ...row('export-' + index), requestHeaders: JSON.stringify({ authorization: 'secret-' + index }),
+    }))
+    for (let offset = 0; offset < entries.length; offset += 50) logs.addRequestLogBatch(entries.slice(offset, offset + 50))
+    logs.addRequestLogBatch([{ ...row('non-pdf'), pageFold: undefined }])
+    const app = express(); logs.registerRoutes(app)
+    const server = app.listen(0, '127.0.0.1')
+    await new Promise<void>(resolve => server.once('listening', resolve))
+    try {
+        const result = await (await fetch('http://127.0.0.1:' + (server.address() as any).port + '/api/request-logs/pagefold?export=1')).json()
+        expect(result.logs).toHaveLength(1002)
+        expect(result.logs.every((entry: any) => !entry.requestHeaders.includes('secret-') && entry.requestHeaders.includes('REDACTED'))).toBe(true)
+        expect(new Set(result.logs.map((entry: any) => entry.pageFold.requestId)).size).toBe(1002)
+        expect(logs.queryUsage({}).total.requests).toBe(1003)
+    } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())) }
+})
