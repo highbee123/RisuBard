@@ -254,7 +254,7 @@ jobs:
           #!/bin/bash
           PORTABLE_DIR="$(cd "$(dirname "$0")/../../.." && pwd)"
           cd "$PORTABLE_DIR"
-          PORT="${PORT:-6001}"
+          PORT="${PORT:-7777}"
           if [ ! -f "bin/node" ]; then
               osascript -e 'display dialog "RisuBard.app must remain inside the RisuBard portable folder." buttons {"OK"} default button 1 with icon stop'
               exit 1
@@ -283,7 +283,7 @@ jobs:
           #!/bin/bash
           SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
           cd "$SCRIPT_DIR"
-          PORT="${PORT:-6001}"
+          export PORT="${PORT:-7777}"
           if command -v xdg-open >/dev/null 2>&1; then
               xdg-open "http://localhost:$PORT" 2>/dev/null &
           elif command -v open >/dev/null 2>&1; then
