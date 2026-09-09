@@ -46,7 +46,7 @@ describe('PageFold statistics use the existing log store', () => {
 })
 
 
-it('filters, exports durable usage, and resets only the selected PDF scope', async () => {
+it('filters statistics but exports all saved PDF logs and resets all PDF records', async () => {
     const { logs } = setup()
     logs.addRequestLogBatch([{...row('a'),model:'gemini-a',provider:'google',source:'test'}, {...row('b','p2'),model:'gemini-b',provider:'google'}, {...row('normal'),pageFold:undefined}])
     const app = express(); logs.registerRoutes(app)
@@ -56,11 +56,15 @@ it('filters, exports durable usage, and resets only the selected PDF scope', asy
     try {
         const data = await (await fetch(url+'?preset=p1&model=gemini-a&source=test')).json()
         expect(data.total.requests).toBe(1); expect(data.daily).toHaveLength(1); expect(data.filters.presets).toHaveLength(2)
-        logs.clearRequestLogs()
         const exported = await (await fetch(url+'?preset=p1&export=1')).json()
-        expect(exported.logs).toHaveLength(1); expect(exported.logs[0].requestBody).toBeUndefined()
+        expect(exported.logs).toHaveLength(2)
+        expect(exported.logs.map((entry: any) => entry.pageFold.presetId).sort()).toEqual(['p1', 'p2'])
+        expect(exported.logs[0].requestBody).toBe('request')
+        logs.clearRequestLogs()
+        const withoutDetails = await (await fetch(url+'?preset=p1&export=1')).json()
+        expect(withoutDetails.logs).toHaveLength(0)
         expect((await fetch(url+'?preset=p1&source=test',{method:'DELETE'})).ok).toBe(true)
-        expect(logs.queryUsage({}).total.requests).toBe(2)
-        expect((await (await fetch(url)).json()).rows[0].pageFold.presetId).toBe('p2')
+        expect(logs.queryUsage({}).total.requests).toBe(1)
+        expect((await (await fetch(url)).json()).rows).toHaveLength(0)
     } finally { server.closeAllConnections(); await new Promise<void>(resolve=>server.close(()=>resolve())) }
 })
