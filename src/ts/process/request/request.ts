@@ -1,3 +1,6 @@
+import * as pageFold from 'src/ts/preset/pageFold/runtime.mjs'
+import { resolveWireModelId } from 'src/ts/preset/adapter/wireInvariants'
+import { authHeaders as pageFoldAuthHeaders } from 'src/ts/requestLog'
 import { Ollama } from 'ollama/dist/browser.mjs';
 import { buildOllamaChatRequest, createOllamaFetch } from './ollamaRequest';
 import { language } from "../../../lang";
@@ -70,6 +73,16 @@ import {
     buildInjectionManifest, mergeRequestStatusSources,
     type RequestKind, type RequestInjectionManifest,
 } from "src/ts/status/requestStatus";
+
+pageFold.configure({
+    resolveModel: resolveWireModelId, authHeaders: pageFoldAuthHeaders, db: getDatabase,
+    priceFetch: (url, init) => makeProxiedFetch()(url, init),
+    status: (detail) => {
+        if (!detail.generationId || getDatabase().showRequestStatus === false) return
+        const saved = detail.savedTokens
+        addBadge(detail.generationId, { key: 'pagefold', text: 'PDF · ' + detail.phase + (detail.pages ? ' · ' + detail.pages + 'p' : '') + (detail.bytes ? ' · ' + Math.round(detail.bytes / 1024) + 'KB' : '') + (typeof detail.inputTokens === 'number' ? ' · 입력 ' + detail.inputTokens.toLocaleString() : '') + (typeof saved === 'number' ? ' · 예상 ' + saved.toLocaleString() + ' 토큰 절약' : ''), tone: typeof saved === 'number' && saved < 0 ? 'warn' : 'info' })
+    },
+})
 
 export type ToolCall = {
     name: string;
@@ -802,6 +815,7 @@ async function requestModelPreset(arg:RequestDataArgumentExtended, preset:ModelP
     // that is the key the per-message viewer looks up (alertRequestData sends
     // genInfo.generationId).
     const logScope = createRequestLogScope({
+        pageFold: pageFold.state(preset).active,
         category: 'llm',
         source: logSource,
         purpose: logPurpose,

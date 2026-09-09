@@ -1,3 +1,4 @@
+import * as pageFold from '../pageFold/runtime.mjs'
 import { beginGeminiCacheTurn, type GeminiCacheTurn } from '../cache/geminiCacheWiring'
 import type { ModelPreset } from '../types'
 import {
@@ -106,7 +107,7 @@ function beginCacheTurn(
     options: AdapterChatOptions,
     credential: AdapterCredential | undefined,
 ): GeminiCacheTurn | null {
-    if (!options.cache) return null
+    if (prepared.__pageFold || !options.cache) return null
     return beginGeminiCacheTurn({
         cache: options.cache,
         url: prepared.url,
@@ -138,7 +139,7 @@ export async function sendGoogleChatRequest(
 ): Promise<AdapterChatResponse> {
     const prepared = await prepareGeminiBody(preset, options, credential, false)
     const cacheTurn = beginCacheTurn(prepared, options, credential)
-    const fetchImpl = options.fetchImpl ?? globalThis.fetch
+    const fetchImpl = pageFold.wrapFetch(preset, options, prepared, options.fetchImpl ?? globalThis.fetch)
     const send = (body: Record<string, unknown>): Promise<Response> => fetchImpl(prepared.url, {
         method: prepared.method,
         headers: prepared.headers,
@@ -173,7 +174,7 @@ export async function sendGoogleChatRequest(
         })
     }
 
-    const parsed = parseGeminiResponse(raw)
+    const parsed = pageFold.restoreParsed(prepared, parseGeminiResponse(raw))
     // Fire-and-forget cache lifecycle (create/extend/cleanup) off the observed
     // usage; never blocks or fails the response.
     cacheTurn?.finish(parsed.usage?.promptTokens)
@@ -186,8 +187,9 @@ export async function* streamGoogleChatRequest(
     credential?: AdapterCredential,
 ): AsyncGenerator<AdapterChatStreamDelta, void, void> {
     const prepared = await prepareGeminiBody(preset, options, credential, true)
+    const restoreText = pageFold.responseRestorer(prepared)
     const cacheTurn = beginCacheTurn(prepared, options, credential)
-    const fetchImpl = options.fetchImpl ?? globalThis.fetch
+    const fetchImpl = pageFold.wrapFetch(preset, options, prepared, options.fetchImpl ?? globalThis.fetch)
     const send = (body: Record<string, unknown>): Promise<Response> => fetchImpl(prepared.url, {
         method: prepared.method,
         headers: { ...prepared.headers, Accept: 'text/event-stream' },
@@ -234,9 +236,12 @@ export async function* streamGoogleChatRequest(
             const delta = parseGeminiStreamDelta(raw)
             if (delta) {
                 if (delta.usage) lastUsage = delta.usage
+                delta.textDelta = restoreText.push(delta.textDelta) + (delta.finishReason ? restoreText.flush() : '')
                 yield delta
             }
         }
+        const finalText = restoreText.flush()
+        if (finalText) yield { textDelta: finalText, raw: {} }
         cacheTurn?.finish(lastUsage?.promptTokens)
     } catch (err) {
         if (err instanceof ModelPresetAdapterError) throw err
@@ -354,7 +359,7 @@ async function prepareGeminiBody(
 
     const suffix = stream ? ':streamGenerateContent?alt=sse' : ':generateContent'
     prepared.url = `${prepared.url}/${encodeURIComponent(modelId)}${suffix}`
-    return { ...prepared, modelId, cacheBoundary: resolvedBoundary }
+    return await pageFold.prepare({ ...prepared, modelId, cacheBoundary: resolvedBoundary }, preset, options, 'google')
 }
 
 function toGeminiFunctionDeclaration(tool: AdapterToolDef): Record<string, unknown> {

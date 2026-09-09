@@ -249,7 +249,17 @@ export interface ResolvedModelProfileSnapshot {
     recommendedTokenizer?: RegistryTokenizer
 }
 
+export interface ModelPresetPdfConfig {
+    enabled: boolean
+    packagingMode: 'maximum' | 'balanced'
+    fontSize: number
+    mergeConsecutiveRoles: boolean
+    inputPrice?: number | null
+}
+
 export interface ModelPreset {
+    /** Optional PageFold conversion; absent is OFF for existing presets. */
+    pageFold?: ModelPresetPdfConfig
     id: string
     name: string
     notes?: string

@@ -1,3 +1,4 @@
+import { finalizeLogs as finalizePageFoldLogs, sanitizeBody as sanitizePageFoldBody } from './preset/pageFold/runtime.mjs'
 // Client-side collection for the server request log (save/request-logs.db).
 //
 // Replaces the old in-memory `fetchLog` array in globalApi.svelte.ts, which
@@ -37,6 +38,7 @@ export interface RequestLogUsage {
 }
 
 export interface RequestLogScopeInit {
+    pageFold?: boolean
     category: RequestLogCategory
     source: RequestLogSource
     purpose?: RequestPurpose
@@ -52,6 +54,7 @@ export interface RequestLogScopeInit {
 }
 
 interface PendingEntry {
+    pageFold?: Record<string, any>
     timestamp: number
     category: RequestLogCategory
     source: RequestLogSource
@@ -194,8 +197,8 @@ async function send(entries: PendingEntry[]): Promise<void> {
 
 /** Fire-and-forget single entry, for call sites that are not scope-shaped. */
 export function recordRequestLog(entry: Omit<PendingEntry, 'clientId'>): void {
-    if (!requestLogEnabled()) return
-    void send([{ ...entry, clientId: getClientId() }])
+    if (!requestLogEnabled() && !entry.pageFold) return
+    void send(finalizePageFoldLogs([{ ...entry, clientId: getClientId() }], requestLogEnabled()))
 }
 
 // ─── Reading back ────────────────────────────────────────────────────────────
@@ -267,7 +270,7 @@ export interface RequestLogQuery {
     bodies?: boolean
 }
 
-async function authHeaders(): Promise<Record<string, string>> {
+export async function authHeaders(): Promise<Record<string, string>> {
     const { forageStorage } = await import('./globalApi.svelte')
     return { 'risu-auth': await forageStorage.createAuth() }
 }
@@ -400,7 +403,7 @@ const NOOP_SCOPE: RequestLogScope = {
 }
 
 export function createRequestLogScope(init: RequestLogScopeInit): RequestLogScope {
-    if (!requestLogEnabled()) return NOOP_SCOPE
+    if (!requestLogEnabled() && !init.pageFold) return NOOP_SCOPE
 
     const entries: PendingEntry[] = []
     const settling: Promise<void>[] = []
@@ -412,6 +415,7 @@ export function createRequestLogScope(init: RequestLogScopeInit): RequestLogScop
             const url = typeof input === 'string' ? input : input.toString()
             const started = Date.now()
             const entry: PendingEntry = {
+                pageFold: (reqInit as RequestInit & { __pageFold?: Record<string, any> })?.__pageFold,
                 timestamp: started,
                 category: init.category,
                 source: init.source,
@@ -428,7 +432,7 @@ export function createRequestLogScope(init: RequestLogScopeInit): RequestLogScop
                 streaming: init.streaming,
                 injectionManifest: entries.length === 0 ? injectionManifest : undefined,
                 requestHeaders: headersToString(reqInit?.headers),
-                requestBody: bodyToString(reqInit?.body),
+                requestBody: (reqInit as any)?.__pageFold ? sanitizePageFoldBody(bodyToString(reqInit?.body)) : bodyToString(reqInit?.body),
                 clientId: getClientId(),
             }
             entries.push(entry)
@@ -589,7 +593,7 @@ export function createRequestLogScope(init: RequestLogScopeInit): RequestLogScop
             if (settling.length > 0) {
                 await Promise.allSettled(settling)
             }
-            await send(entries)
+            await send(finalizePageFoldLogs(entries, requestLogEnabled()))
         },
     }
 }

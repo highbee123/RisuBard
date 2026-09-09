@@ -225,6 +225,7 @@ function createModelJobs(opts = {}) {
             generationId: row.generation_id,
             adapterKind: row.adapter_kind,
             model: row.model ?? undefined,
+            pageFold: row.pageFold ?? undefined,
             targetOrigin: row.target_origin ?? undefined,
             kind: row.kind,
             streaming: !!row.streaming,
@@ -427,6 +428,10 @@ function createModelJobs(opts = {}) {
             arg.streaming ? 1 : 0,
             Date.now()
         );
+        if (arg.pageFold?.version === 1) {
+            const pageFold = require('./pagefold-logs.cjs').normalize(arg.pageFold);
+            if (pageFold) { delete pageFold.pdfContent; persistRow({ ...stmtGet.get(jobId), pageFold }, 'pagefold'); }
+        }
         activeJobs.set(jobId, job);
         // Touch the journal synchronously so a stream reader attaching right
         // after the POST returns never races the async open in runJob().
@@ -564,6 +569,7 @@ function createModelJobs(opts = {}) {
                 chatId: req.body?.chatId,
                 generationId: req.body?.generationId,
                 adapterKind: req.body?.adapterKind,
+                pageFold: req.body?.pageFold,
                 kind: req.body?.kind,
                 streaming: !!req.body?.streaming,
                 timeoutMs: req.body?.timeoutMs

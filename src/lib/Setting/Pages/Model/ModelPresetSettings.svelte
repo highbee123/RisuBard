@@ -13,6 +13,8 @@
     import NumberInput from "src/lib/UI/GUI/NumberInput.svelte";
     import { tokenizerList } from "src/ts/tokenizer";
     import ModelPresetBasicInfo from "./ModelPresetBasicInfo.svelte";
+    import ModelPresetPdfSettings from "./ModelPresetPdfSettings.svelte";
+    import { state as pdfState } from "src/ts/preset/pageFold/runtime.mjs";
     import ApiKeyPoolManager from "./ApiKeyPoolManager.svelte";
     import ModelPresetOptions from "./ModelPresetOptions.svelte";
     import SettingRenderer from "../../SettingRenderer.svelte";
@@ -67,6 +69,14 @@
             ? DBState.db.modelPresets.find(p => p.id === editingId) ?? null
             : null
     );
+
+    const pdfActive = $derived(!!editingPreset && pdfState(editingPreset).active);
+    $effect(() => {
+        if (pdfActive && editingPreset?.promptCaching?.enabled) {
+            editingPreset.promptCaching = { ...editingPreset.promptCaching, enabled: false };
+            editingPreset.updatedAt = Date.now();
+        }
+    });
 
     // If the preset being edited disappears (deleted elsewhere), fall back to list.
     $effect(() => {
@@ -301,6 +311,7 @@
                         {/if}
                     </div>
                 {/if}
+                <ModelPresetPdfSettings preset={editingPreset} />
                 {#if showCacheSection}
                     <div class="flex flex-col gap-4 mb-6">
                         <h3 class="text-sm font-semibold text-textcolor2 uppercase tracking-wide">{language.modelPresetCacheSection}</h3>
@@ -310,7 +321,7 @@
                                 <span class="text-xs text-textcolor2">{language.modelPresetCacheEnableHelp}</span>
                             </div>
                             <div class="shrink-0">
-                                <ShSwitch checked={!!editingPreset.promptCaching?.enabled} onCheckedChange={(v) => { editingPreset.promptCaching = { ...(editingPreset.promptCaching ?? {}), enabled: v } }} />
+                                <ShSwitch checked={!pdfActive && !!editingPreset.promptCaching?.enabled} disabled={pdfActive} onCheckedChange={(v) => { if (!pdfActive) editingPreset.promptCaching = { ...(editingPreset.promptCaching ?? {}), enabled: v } }} />
                             </div>
                         </div>
                         <ShAlert variant="warning">

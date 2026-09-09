@@ -1,3 +1,4 @@
+import * as pageFold from '../pageFold/runtime.mjs'
 import type { ModelPreset } from '../types'
 import {
     ModelPresetAdapterError,
@@ -77,7 +78,7 @@ export async function sendChatRequest(
     credential?: AdapterCredential,
 ): Promise<AdapterChatResponse> {
     const prepared = await prepareOpenAiBody(preset, options, credential, false)
-    const fetchImpl = options.fetchImpl ?? globalThis.fetch
+    const fetchImpl = pageFold.wrapFetch(preset, options, prepared, options.fetchImpl ?? globalThis.fetch)
     let response: Response
     try {
         response = await fetchImpl(prepared.url, {
@@ -103,7 +104,7 @@ export async function sendChatRequest(
         })
     }
 
-    return parseChatCompletion(raw)
+    return pageFold.restoreParsed(prepared, parseChatCompletion(raw))
 }
 
 export async function* streamChatRequest(
@@ -112,7 +113,8 @@ export async function* streamChatRequest(
     credential?: AdapterCredential,
 ): AsyncGenerator<AdapterChatStreamDelta, void, void> {
     const prepared = await prepareOpenAiBody(preset, options, credential, true)
-    const fetchImpl = options.fetchImpl ?? globalThis.fetch
+    const restoreText = pageFold.responseRestorer(prepared)
+    const fetchImpl = pageFold.wrapFetch(preset, options, prepared, options.fetchImpl ?? globalThis.fetch)
     let response: Response
     try {
         response = await fetchImpl(prepared.url, {
@@ -135,7 +137,11 @@ export async function* streamChatRequest(
 
     try {
         for await (const event of parseSseStream(response.body)) {
-            if (event.data === '[DONE]') return
+            if (event.data === '[DONE]') {
+                const finalText = restoreText.flush()
+                if (finalText) yield { textDelta: finalText, raw: {} }
+                return
+            }
             if (event.data.length === 0) continue
             let raw: unknown
             try {
@@ -148,8 +154,13 @@ export async function* streamChatRequest(
                 )
             }
             const delta = parseChatStreamDelta(raw)
-            if (delta) yield delta
+            if (delta) {
+                delta.textDelta = restoreText.push(delta.textDelta) + (delta.finishReason ? restoreText.flush() : '')
+                yield delta
+            }
         }
+        const finalText = restoreText.flush()
+        if (finalText) yield { textDelta: finalText, raw: {} }
     } catch (err) {
         // Intentional domain errors (parse, etc.) pass through;
         // fetch/abort/network failures during stream body read get normalized.
@@ -270,7 +281,7 @@ async function prepareOpenAiBody(
         delete prepared.body.parallel_tool_calls
         delete prepared.body.tool_choice
     }
-    return prepared
+    return await pageFold.prepare(prepared, preset, options, 'openai')
 }
 
 function toWireToolDef(tool: AdapterToolDef): Record<string, unknown> {

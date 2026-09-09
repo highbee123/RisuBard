@@ -1,3 +1,4 @@
+import { responseRestorer, restoreParsed } from 'src/ts/preset/pageFold/runtime.mjs'
 import { get } from 'svelte/store'
 import { v4 as uuidv4 } from 'uuid'
 import { getDatabase, type Chat, type Database, type Message } from 'src/ts/storage/database.svelte'
@@ -44,6 +45,7 @@ import type { AdapterChatStreamDelta, AdapterUsage } from 'src/ts/preset/adapter
 // could fire side effects on a chat the user is not even looking at.
 
 export interface ModelJobRecord {
+    pageFold?: Record<string, any>
     id: string
     chatId: string
     generationId?: string | null
@@ -128,7 +130,9 @@ export async function decodeStreamingJournal(
 export async function decodeStreamingJournalDetailed(
     kind: string | null | undefined,
     body: ReadableStream<Uint8Array>,
+    pageFold?: Record<string, any>,
 ): Promise<DecodedJournal> {
+    const restore = responseRestorer({ __pageFold: pageFold })
     let fullText = ''
     let reasoningText = ''
     let usage: AdapterUsage | undefined
@@ -155,8 +159,9 @@ export async function decodeStreamingJournalDetailed(
         // (input) and message_delta (output), same as the live pump does.
         if (delta.usage) usage = usage ? { ...usage, ...delta.usage } : delta.usage
         if (delta.reasoningDelta) reasoningText += delta.reasoningDelta
-        fullText += delta.textDelta
+        fullText += restore.push(delta.textDelta)
     }
+    fullText += restore.flush()
     return {
         text: (reasoningText.length > 0 ? formatReasoningParts([{ text: reasoningText }]) : '') + fullText,
         usage,
@@ -170,12 +175,12 @@ export function decodeJsonJournal(kind: string | null | undefined, text: string)
     return decodeJsonJournalDetailed(kind, text).text
 }
 
-export function decodeJsonJournalDetailed(kind: string | null | undefined, text: string): DecodedJournal {
+export function decodeJsonJournalDetailed(kind: string | null | undefined, text: string, pageFold?: Record<string, any>): DecodedJournal {
     const raw: unknown = JSON.parse(text)
     const response = kind === 'anthropic-messages' ? parseAnthropicMessage(raw)
         : kind === 'google-gemini' ? parseGeminiResponse(raw)
         : parseChatCompletion(raw)
-    return { text: formatReasoningParts(response.reasoning) + response.text, usage: response.usage }
+    return { text: formatReasoningParts(response.reasoning) + restoreParsed({ __pageFold: pageFold }, response).text, usage: response.usage }
 }
 
 // --- chat lookup / slot-in --------------------------------------------------
@@ -337,6 +342,7 @@ function recordJobRecoveryLog(
     result: { ok: true, text: string, usage?: AdapterUsage } | { ok: false, error: string },
 ): void {
     recordRequestLog({
+        pageFold: job.pageFold ? { ...job.pageFold, recovered: true, recoveredResponseTokens: result.ok === true ? result.usage?.completionTokens : undefined } : undefined,
         timestamp: Date.now(),
         category: 'llm',
         // Recovered jobs are always main chat generations — aux jobs are
@@ -365,7 +371,11 @@ function recordJobRecoveryLog(
         // Harvested from the journal by the same adapter parsers a live run
         // uses, so a recovered generation counts in the usage statistics.
         inputTokens: result.ok === true ? result.usage?.promptTokens : undefined,
-        outputTokens: result.ok === true ? result.usage?.completionTokens : undefined,
+        outputTokens: result.ok === true
+            ? job.pageFold && job.adapterKind === 'google-gemini' && (result.usage?.completionTokens !== undefined || result.usage?.reasoningTokens !== undefined)
+                ? (result.usage?.completionTokens ?? 0) + (result.usage?.reasoningTokens ?? 0)
+                : result.usage?.completionTokens
+            : undefined,
         cachedTokens: result.ok === true ? result.usage?.cachedTokens : undefined,
         reasoningTokens: result.ok === true ? result.usage?.reasoningTokens : undefined,
     })
@@ -387,8 +397,8 @@ async function readJobResult(job: ModelJobRecord): Promise<{ ok: true, text: str
     }
     try {
         const decoded = job.streaming
-            ? await decodeStreamingJournalDetailed(job.adapterKind, res.body)
-            : decodeJsonJournalDetailed(job.adapterKind, await res.text())
+            ? await decodeStreamingJournalDetailed(job.adapterKind, res.body, job.pageFold)
+            : decodeJsonJournalDetailed(job.adapterKind, await res.text(), job.pageFold)
         if (decoded.text.trim().length === 0) {
             return { ok: false, error: 'Recovered response was empty' }
         }

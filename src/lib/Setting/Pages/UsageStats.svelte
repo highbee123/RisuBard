@@ -1,4 +1,5 @@
 <script lang="ts">
+    import PageFoldUsage from "./PageFoldUsage.svelte"
     import ShButton from 'src/lib/UI/GUI/ShButton.svelte'
     import ShBadge from 'src/lib/UI/GUI/ShBadge.svelte'
     import ShToggle from 'src/lib/UI/GUI/ShToggle.svelte'
@@ -165,6 +166,8 @@
         load()
     })
 </script>
+
+<PageFoldUsage />
 
 <p class="text-textcolor2 text-sm mb-4">{language.usageDesc}</p>
 

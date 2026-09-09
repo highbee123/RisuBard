@@ -816,3 +816,16 @@ describe('attachRunningJob', () => {
         status.stopStatusTimer()
     })
 })
+
+
+describe('PageFold recovery', () => {
+    test('replays visible newline markers only when PDF was enabled', async () => {
+        const { recovery } = await loadModules()
+        const raw = JSON.stringify({ choices: [{ message: { content: 'one\\ntwo' } }] })
+        expect(recovery.decodeJsonJournalDetailed('openai-compatible', raw).text).toBe('one\\ntwo')
+        expect(recovery.decodeJsonJournalDetailed('openai-compatible', raw, { version: 1 }).text).toBe('one\ntwo')
+        expect(recovery.decodeJsonJournalDetailed('openai-compatible', raw, { version: 1, structuredOutput: true }).text).toBe('one\\ntwo')
+        const wire = ['one\\', 'ntwo'].map(content => 'data: ' + JSON.stringify({ choices: [{ delta: { content } }] }) + '\n\n').join('')
+        expect((await recovery.decodeStreamingJournalDetailed('openai-compatible', sseStream(wire), { version: 1 })).text).toBe('one\ntwo')
+    })
+})

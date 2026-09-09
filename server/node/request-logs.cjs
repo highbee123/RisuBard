@@ -1,6 +1,7 @@
 'use strict';
 
 const fs = require('fs');
+const pageFoldLogs = require('./pagefold-logs.cjs');
 const path = require('path');
 const { atomicWriteFile, atomicWriteJson, readVerifiedJson } = require('./file-store.cjs');
 const { maskSensitive } = require('./logs.cjs');
@@ -65,9 +66,12 @@ function normalizeEntry(entry) {
     const headers = entry.requestHeaders != null ? truncateTail(maskSensitive(String(entry.requestHeaders)), MAX_HEADER_BYTES) : { text: null, truncated: false };
     const body = entry.requestBody != null ? truncateBody(maskSensitive(String(entry.requestBody)), MAX_BODY_BYTES) : { text: null, truncated: false };
     const response = entry.responseBody != null ? truncateTail(maskSensitive(String(entry.responseBody)), MAX_BODY_BYTES) : { text: null, truncated: false };
+    const pageFold = pageFoldLogs.normalize(entry.pageFold);
     const injectionManifest = normalizeInjectionManifest(entry.injectionManifest);
-    const sizeBytes = Buffer.byteLength(headers.text ?? '', 'utf8') + Buffer.byteLength(body.text ?? '', 'utf8') + Buffer.byteLength(response.text ?? '', 'utf8') + Buffer.byteLength(injectionManifest ? JSON.stringify(injectionManifest) : '', 'utf8');
+    const pageFoldBytes = pageFold ? Buffer.byteLength(JSON.stringify(pageFold), 'utf8') : 0;
+    const sizeBytes = pageFoldBytes + Buffer.byteLength(headers.text ?? '', 'utf8') + Buffer.byteLength(body.text ?? '', 'utf8') + Buffer.byteLength(response.text ?? '', 'utf8') + Buffer.byteLength(injectionManifest ? JSON.stringify(injectionManifest) : '', 'utf8');
     return {
+        ...(pageFold ? { pageFold } : {}),
         timestamp, category: CATEGORIES.includes(entry.category) ? entry.category : 'other', source: SOURCES.includes(entry.source) ? entry.source : 'other', purpose: PURPOSES.includes(entry.purpose) ? entry.purpose : null,
         chatId: str(entry.chatId, 128), sessionChatId: str(entry.sessionChatId, 128), generationId: str(entry.generationId, 128), model: str(entry.model, 128), provider: str(entry.provider, 64),
         url: str(maskSensitive(entry.url ?? ''), 2048) ?? '', method: str(entry.method, 16), status: toInt(entry.status), success: !!entry.success, aborted: !!entry.aborted,
@@ -140,10 +144,17 @@ function createRequestLogs(opts = {}) {
 
     function addRequestLogBatch(entries) {
         if (!Array.isArray(entries) || !entries.length) return 0;
+        const seenPdfIds = new Set(getUsage().filter(r => r.pageFold?.requestId).map(r => r.pageFold.requestId));
+        entries = entries.filter(e => { if (!e?.pageFold?.requestId) return true; if (seenPdfIds.has(e.pageFold.requestId)) return false; seenPdfIds.add(e.pageFold.requestId); return true; });
         const rows = entries.slice(-MAX_BATCH_SIZE).filter(entry => entry && typeof entry === 'object' && typeof entry.url === 'string').map(entry => ({ id: state.nextId++, ...normalizeEntry(entry) }));
         if (!rows.length) return 0;
         const requestCache = getRequests();
-        const usageRows = rows.filter(row => row.category === 'llm');
+        const usageRows = rows.filter(row => row.category === 'llm').map(row => {
+            if (!row.pageFold) return row;
+            const copy = { ...row, pageFold: { ...row.pageFold } };
+            delete copy.pageFold.pdfContent; delete copy.requestBody; delete copy.responseBody; delete copy.requestHeaders;
+            return copy;
+        });
         const usageCache = getUsage();
         appendJsonl(requestsFile, rows); requestCache.push(...rows);
         appendJsonl(usageFile, usageRows); usageCache.push(...usageRows);
@@ -200,6 +211,7 @@ function createRequestLogs(opts = {}) {
 
     function registerRoutes(app, { auth, activeSession } = {}) {
         const guard = auth ?? (async () => true); const sessionGuard = activeSession ?? (() => true);
+        pageFoldLogs.register(app, { guard, sessionGuard, getRequests, getUsage, replace: (nextRequests, nextUsage) => { requests = nextRequests; usage = nextUsage; rewrite('requests.jsonl', requests); rewrite('usage.jsonl', usage); } });
         app.post('/api/request-logs', async (req, res, next) => { if (!await guard(req, res)) return; try { res.send({ success: true, written: addRequestLogBatch(Array.isArray(req.body) ? req.body : [req.body]) }); } catch (error) { next(error); } });
         app.get('/api/request-logs', async (req, res, next) => { if (!await guard(req, res)) return; try { const filter = { categories: parseCsv(req.query.categories), sources: parseCsv(req.query.sources), chatId: req.query.chat_id, sessionChatId: req.query.session_chat_id, successOnly: req.query.success === '1', failedOnly: req.query.failed === '1', since: parseNum(req.query.since), until: parseNum(req.query.until) }; res.send({ success: true, content: queryRequestLogs({ ...filter, beforeId: parseNum(req.query.before_id), limit: parseNum(req.query.limit), withBodies: req.query.bodies === '1' }), total: countRequestLogs(filter) }); } catch (error) { next(error); } });
         app.get('/api/request-logs/usage', async (req, res, next) => { if (!await guard(req, res)) return; try { res.send({ success: true, ...queryUsage({ categories: parseCsv(req.query.categories), sources: parseCsv(req.query.sources), models: parseCsv(req.query.models), since: parseNum(req.query.since), until: parseNum(req.query.until), successOnly: req.query.success === '1' }), dimensions: usageDimensions() }); } catch (error) { next(error); } });

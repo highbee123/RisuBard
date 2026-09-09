@@ -113,6 +113,7 @@ export function makeJobFetch(opts: JobFetchOptions): typeof fetch {
                 method: 'POST',
                 headers: { 'content-type': 'application/json', ...await authHeader() },
                 body: JSON.stringify({
+                    pageFold: (init as RequestInit & { __pageFold?: Record<string, unknown> })?.__pageFold ? { ...(init as any).__pageFold, pdfContent: undefined } : undefined,
                     targetUrl: url,
                     method: init?.method ?? 'POST',
                     headers: (init?.headers as Record<string, string>) ?? {},

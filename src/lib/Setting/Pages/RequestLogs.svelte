@@ -1,4 +1,5 @@
 <script lang="ts">
+    import PageFoldUsage from "./PageFoldUsage.svelte"
     import ShButton from 'src/lib/UI/GUI/ShButton.svelte'
     import ShInput from 'src/lib/UI/GUI/ShInput.svelte'
     import ShBadge from 'src/lib/UI/GUI/ShBadge.svelte'
@@ -261,6 +262,8 @@
         loadInitial()
     })
 </script>
+
+<PageFoldUsage />
 
 <p class="text-textcolor2 text-sm mb-4">{language.requestLogsDesc}</p>
 

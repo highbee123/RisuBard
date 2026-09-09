@@ -146,6 +146,17 @@ describe('model-jobs', () => {
         return { status: res.status, json: await res.json() }
     }
 
+    it('retains PDF recovery metadata without persisting PDF prompt text', async () => {
+        upstream.chunks = ['data: [DONE]\n\n']; upstream.hang = false; upstream.delayMs = 0
+        const { json } = await createJob({ pageFold: { version: 1, presetId: 'p', requestId: 'pdf-attempt', structuredOutput: true, pdfContent: 'private prompt', apiKey: SECRET_KEY } })
+        const meta = await waitForStatus(base, json.jobId, ['done'])
+        expect(meta.pageFold.requestId).toBe('pdf-attempt')
+        expect(meta.pageFold.structuredOutput).toBe(true)
+        expect(meta.pageFold.pdfContent).toBeUndefined()
+        const saved = fs.readFileSync(path.join(saveDir, 'model-jobs', json.jobId, 'state.json'), 'utf8')
+        expect(saved).not.toContain('private prompt'); expect(saved).not.toContain(SECRET_KEY)
+    })
+
     it('rejects unauthenticated requests', async () => {
         const res = await fetch(`${base}/api/model-jobs`, { method: 'POST' })
         expect(res.status).toBe(400)

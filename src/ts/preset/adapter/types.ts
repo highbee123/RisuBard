@@ -21,6 +21,7 @@ export interface AdapterRequestContext {
 }
 
 export interface AdapterPreparedRequest {
+    __pageFold?: Record<string, any>
     method: 'POST'
     url: string
     headers: Record<string, string>
