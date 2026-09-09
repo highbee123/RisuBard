@@ -1,4 +1,5 @@
-import { finalizeLogs as finalizePageFoldLogs, sanitizeBody as sanitizePageFoldBody } from './preset/pageFold/runtime.mjs'
+import type { PageFoldMetadata, PageFoldRequestInit } from './preset/pageFold/types'
+import { finalizeLogs as finalizePageFoldLogs, sanitizeBody as sanitizePageFoldBody } from './preset/pageFold/runtime'
 // Client-side collection for the server request log (save/request-logs.db).
 //
 // Replaces the old in-memory `fetchLog` array in globalApi.svelte.ts, which
@@ -54,7 +55,7 @@ export interface RequestLogScopeInit {
 }
 
 interface PendingEntry {
-    pageFold?: Record<string, any>
+    pageFold?: PageFoldMetadata
     timestamp: number
     category: RequestLogCategory
     source: RequestLogSource
@@ -415,7 +416,7 @@ export function createRequestLogScope(init: RequestLogScopeInit): RequestLogScop
             const url = typeof input === 'string' ? input : input.toString()
             const started = Date.now()
             const entry: PendingEntry = {
-                pageFold: (reqInit as RequestInit & { __pageFold?: Record<string, any> })?.__pageFold,
+                pageFold: (reqInit as PageFoldRequestInit)?.__pageFold,
                 timestamp: started,
                 category: init.category,
                 source: init.source,
@@ -432,7 +433,7 @@ export function createRequestLogScope(init: RequestLogScopeInit): RequestLogScop
                 streaming: init.streaming,
                 injectionManifest: entries.length === 0 ? injectionManifest : undefined,
                 requestHeaders: headersToString(reqInit?.headers),
-                requestBody: (reqInit as any)?.__pageFold ? sanitizePageFoldBody(bodyToString(reqInit?.body)) : bodyToString(reqInit?.body),
+                requestBody: (reqInit as PageFoldRequestInit)?.__pageFold ? sanitizePageFoldBody(bodyToString(reqInit?.body)) : bodyToString(reqInit?.body),
                 clientId: getClientId(),
             }
             entries.push(entry)

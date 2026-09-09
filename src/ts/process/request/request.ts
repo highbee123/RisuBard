@@ -1,4 +1,4 @@
-import * as pageFold from 'src/ts/preset/pageFold/runtime.mjs'
+import * as pageFold from 'src/ts/preset/pageFold/runtime'
 import { resolveWireModelId } from 'src/ts/preset/adapter/wireInvariants'
 import { authHeaders as pageFoldAuthHeaders } from 'src/ts/requestLog'
 import { Ollama } from 'ollama/dist/browser.mjs';

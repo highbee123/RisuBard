@@ -1,6 +1,6 @@
 import { beforeEach, afterEach, expect, it, vi } from 'vitest'
 import { mount, unmount, flushSync, tick } from 'svelte'
-import { configure } from './runtime.mjs'
+import { configure } from './runtime'
 import ModelPresetPdfSettings from 'src/lib/Setting/Pages/Model/ModelPresetPdfSettings.svelte'
 import PageFoldStats from 'src/lib/Setting/Pages/PageFoldStats.svelte'
 import { language } from 'src/lang'

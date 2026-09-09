@@ -1,7 +1,7 @@
 <script lang="ts">
     import { language } from 'src/lang'
     import type { ModelPreset, ModelPresetPdfConfig } from 'src/ts/preset/types'
-    import { state as pdfState, config } from 'src/ts/preset/pageFold/runtime.mjs'
+    import { state as pdfState, config } from 'src/ts/preset/pageFold/runtime'
     import ShSwitch from 'src/lib/UI/GUI/ShSwitch.svelte'
     import ShAccordion from 'src/lib/UI/GUI/ShAccordion.svelte'
     import ShButton from 'src/lib/UI/GUI/ShButton.svelte'

@@ -1,4 +1,4 @@
-import * as pageFold from '../pageFold/runtime.mjs'
+import * as pageFold from '../pageFold/runtime'
 import { beginGeminiCacheTurn, type GeminiCacheTurn } from '../cache/geminiCacheWiring'
 import type { ModelPreset } from '../types'
 import {

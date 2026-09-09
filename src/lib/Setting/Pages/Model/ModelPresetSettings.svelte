@@ -14,7 +14,7 @@
     import { tokenizerList } from "src/ts/tokenizer";
     import ModelPresetBasicInfo from "./ModelPresetBasicInfo.svelte";
     import ModelPresetPdfSettings from "./ModelPresetPdfSettings.svelte";
-    import { state as pdfState } from "src/ts/preset/pageFold/runtime.mjs";
+    import { state as pdfState } from "src/ts/preset/pageFold/runtime";
     import ApiKeyPoolManager from "./ApiKeyPoolManager.svelte";
     import ModelPresetOptions from "./ModelPresetOptions.svelte";
     import SettingRenderer from "../../SettingRenderer.svelte";

@@ -1,3 +1,4 @@
+import type { PageFoldRequestInit } from 'src/ts/preset/pageFold/types'
 import { forageStorage } from 'src/ts/globalApi.svelte'
 import { language } from 'src/lang'
 import type { RequestLogSource } from 'src/ts/requestLog'
@@ -113,7 +114,7 @@ export function makeJobFetch(opts: JobFetchOptions): typeof fetch {
                 method: 'POST',
                 headers: { 'content-type': 'application/json', ...await authHeader() },
                 body: JSON.stringify({
-                    pageFold: (init as RequestInit & { __pageFold?: Record<string, unknown> })?.__pageFold ? { ...(init as any).__pageFold, pdfContent: undefined } : undefined,
+                    pageFold: (init as PageFoldRequestInit)?.__pageFold ? { ...(init as PageFoldRequestInit).__pageFold, pdfContent: undefined } : undefined,
                     targetUrl: url,
                     method: init?.method ?? 'POST',
                     headers: (init?.headers as Record<string, string>) ?? {},

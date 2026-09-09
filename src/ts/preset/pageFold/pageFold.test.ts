@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { configure, state, prepare, finalizeLogs, sanitize, wrapFetch } from './runtime.mjs'
+import { configure, state, prepare, finalizeLogs, sanitize, wrapFetch } from './runtime'
 import { generateTranscriptPdf } from './vendor.mjs'
 import { sendGoogleChatRequest, streamGoogleChatRequest } from '../adapter/googleGemini'
 import { sendChatRequest } from '../adapter/openaiCompatible'
@@ -294,7 +294,7 @@ describe('PageFold usage and response correctness', () => {
     })
     it('does not modify structured JSON responses', async () => {
         const r = new Response('{"escaped":"\\\\n"}', { headers: { 'content-type': 'application/json' } })
-        const fn = wrapFetch(preset(), {}, { __pageFold: { structuredOutput: true } }, async () => r)
+        const fn = wrapFetch(preset(), {}, { __pageFold: { version: 1, structuredOutput: true } }, async () => r)
         expect(await fn('https://example.test', {})).toBe(r)
     })
     it('generates a nonempty Unicode PDF with an explicit text mapping', async () => {

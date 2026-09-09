@@ -1,4 +1,5 @@
-import { responseRestorer, restoreParsed } from 'src/ts/preset/pageFold/runtime.mjs'
+import type { PageFoldMetadata } from 'src/ts/preset/pageFold/types'
+import { responseRestorer, restoreParsed } from 'src/ts/preset/pageFold/runtime'
 import { get } from 'svelte/store'
 import { v4 as uuidv4 } from 'uuid'
 import { getDatabase, type Chat, type Database, type Message } from 'src/ts/storage/database.svelte'
@@ -45,7 +46,7 @@ import type { AdapterChatStreamDelta, AdapterUsage } from 'src/ts/preset/adapter
 // could fire side effects on a chat the user is not even looking at.
 
 export interface ModelJobRecord {
-    pageFold?: Record<string, any>
+    pageFold?: PageFoldMetadata
     id: string
     chatId: string
     generationId?: string | null
@@ -130,7 +131,7 @@ export async function decodeStreamingJournal(
 export async function decodeStreamingJournalDetailed(
     kind: string | null | undefined,
     body: ReadableStream<Uint8Array>,
-    pageFold?: Record<string, any>,
+    pageFold?: PageFoldMetadata,
 ): Promise<DecodedJournal> {
     const restore = responseRestorer({ __pageFold: pageFold })
     let fullText = ''
@@ -175,7 +176,7 @@ export function decodeJsonJournal(kind: string | null | undefined, text: string)
     return decodeJsonJournalDetailed(kind, text).text
 }
 
-export function decodeJsonJournalDetailed(kind: string | null | undefined, text: string, pageFold?: Record<string, any>): DecodedJournal {
+export function decodeJsonJournalDetailed(kind: string | null | undefined, text: string, pageFold?: PageFoldMetadata): DecodedJournal {
     const raw: unknown = JSON.parse(text)
     const response = kind === 'anthropic-messages' ? parseAnthropicMessage(raw)
         : kind === 'google-gemini' ? parseGeminiResponse(raw)

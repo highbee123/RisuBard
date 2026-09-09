@@ -1,3 +1,4 @@
+import type { PageFoldMetadata } from '../pageFold/types'
 import type { GeminiPromptCachingConfig } from '../cache/geminiContextCache'
 import type { ModelPreset } from '../types'
 
@@ -21,7 +22,7 @@ export interface AdapterRequestContext {
 }
 
 export interface AdapterPreparedRequest {
-    __pageFold?: Record<string, any>
+    __pageFold?: PageFoldMetadata
     method: 'POST'
     url: string
     headers: Record<string, string>

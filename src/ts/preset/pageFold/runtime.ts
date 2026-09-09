@@ -1,8 +1,36 @@
+import type { AdapterChatMessage, AdapterChatOptions, AdapterChatResponse, AdapterPreparedRequest } from '../adapter/types'
+import type { ModelPreset, ModelPresetPdfConfig } from '../types'
+import type { PageFoldHost, PageFoldLogEntry, PageFoldMetadata, PageFoldRequestInit, PageFoldStatus } from './types'
 import { generateTranscriptPdf, packagePrompt, estimateTextTokens, restoreResponseNewlines, createStreamingNewlineRestorer } from './vendor.mjs';
 
-let host = {};
-const priceCache = new Map();
-export async function discoverPrice(prepared, preset) {
+
+interface DiscoveredPrice { price: number; at: number; source: string }
+interface PriceCatalog { data?: { id?: string; pricing?: { prompt?: string | number | null } }[] }
+// Provider body fields touched by PageFold; all other adapter fields stay opaque.
+interface PageFoldWireBody extends Record<string, unknown> {
+  generationConfig?: Record<string, unknown> & { thinkingConfig?: { thinkingLevel?: string; thinkingBudget?: number }; responseMimeType?: string }
+  contents?: Record<string, unknown>[]
+  messages?: Record<string, unknown>[]
+  plugins?: (Record<string, unknown> & { id?: string })[]
+  stream_options?: Record<string, unknown>
+  service_tier?: string
+  reasoning_effort?: string
+  reasoning?: { effort?: string }
+}
+interface UsageFields {
+  promptTokenCount?: unknown; prompt_tokens?: unknown
+  candidatesTokenCount?: unknown; completion_tokens?: unknown
+  thoughtsTokenCount?: unknown; completion_tokens_details?: { reasoning_tokens?: unknown }
+  cost?: unknown
+}
+interface UsageFrame { service_tier?: string; usageMetadata?: UsageFields; usage?: UsageFields }
+type Pdf = Awaited<ReturnType<typeof generateTranscriptPdf>>
+type DisplayRequest = { __pageFold?: Pick<PageFoldMetadata, 'structuredOutput'> }
+interface NewlineRestorer { push: (text: string) => string; flush: () => string }
+
+let host: PageFoldHost = {};
+const priceCache = new Map<string, DiscoveredPrice>();
+export async function discoverPrice(prepared: AdapterPreparedRequest, preset: ModelPreset): Promise<DiscoveredPrice | null> {
   const url = new URL(prepared.url);
   const gateway = url.hostname === 'openrouter.ai' || ['vercel', 'llmgateway'].includes(preset.profileSnapshot?.providerBaseId);
   if (!gateway || !/\/chat\/completions\/?$/.test(url.pathname)) return null;
@@ -15,7 +43,7 @@ export async function discoverPrice(prepared, preset) {
   try {
     const response = await (host.priceFetch ?? fetch)(catalog.href, { headers, signal: AbortSignal.timeout(5000) });
     if (!response.ok) return null;
-    const data = await response.json();
+    const data: PriceCatalog = await response.json();
     const entry = data.data?.find(m => m.id === model);
     const raw = entry?.pricing?.prompt;
     if (raw == null || raw === '' || !Number.isFinite(Number(raw)) || Number(raw) < 0) return null;
@@ -23,9 +51,9 @@ export async function discoverPrice(prepared, preset) {
     priceCache.set(key, value); return value;
   } catch { return null; }
 }
-export function configure(value) { host = value; }
-export function config(preset) {
-  const value = preset?.pageFold ?? {};
+export function configure(value: PageFoldHost): void { host = value; }
+export function config(preset: ModelPreset): ModelPresetPdfConfig {
+  const value: Partial<ModelPresetPdfConfig> = preset?.pageFold ?? {};
   return {
     enabled: value.enabled === true,
     packagingMode: value.packagingMode === 'balanced' ? 'balanced' : 'maximum',
@@ -34,13 +62,13 @@ export function config(preset) {
     inputPrice: typeof value.inputPrice === 'number' && Number.isFinite(value.inputPrice) && value.inputPrice >= 0 ? value.inputPrice : null,
   };
 }
-export function state(preset) {
+export function state(preset: ModelPreset): { modelId: string; eligible: boolean; active: boolean } {
   let modelId = '';
   try { modelId = host.resolveModel ? host.resolveModel(preset) : resolveModel(preset); } catch {}
   const eligible = /gemini/i.test(modelId);
   return { modelId, eligible, active: eligible && config(preset).enabled };
 }
-export function resolveModel(preset) {
+export function resolveModel(preset: ModelPreset): string {
   const field = preset?.profileSnapshot?.schema?.find(f => f?.key === 'modelId');
   if (field) {
     const value = preset.userValues?.modelId;
@@ -52,18 +80,18 @@ export function resolveModel(preset) {
   }
   return preset?.profileSnapshot?.modelId ?? '';
 }
-function abort(signal) { if (signal?.aborted) throw new DOMException('요청이 중단되었습니다.', 'AbortError'); }
-let cachedPdf;
+function abort(signal?: AbortSignal): void { if (signal?.aborted) throw new DOMException('요청이 중단되었습니다.', 'AbortError'); }
+let cachedPdf: { key: string; pdf: Pdf } | undefined;
 const events = new EventTarget();
-export function subscribe(callback) { events.addEventListener('status', callback); return () => events.removeEventListener('status', callback); }
-function status(detail) { events.dispatchEvent(new CustomEvent('status', { detail })); try { host.status?.(detail); } catch {} }
+export function subscribe(callback: (event: CustomEvent<PageFoldStatus>) => void): () => void { events.addEventListener('status', callback); return () => events.removeEventListener('status', callback); }
+function status(detail: PageFoldStatus): void { events.dispatchEvent(new CustomEvent('status', { detail })); try { host.status?.(detail); } catch {} }
 
 // Preserve structured tool history and its signatures as an untouched suffix.
-function splitMessages(messages) {
+function splitMessages(messages: AdapterChatMessage[]): { prefix: AdapterChatMessage[]; tail: AdapterChatMessage[] } {
   const boundary = messages.findIndex(m => m.role === 'tool' || m.toolCalls?.length || m.providerEcho || m.reasoning?.some(r => r.signature));
   return { prefix: boundary < 0 ? messages : messages.slice(0, boundary), tail: boundary < 0 ? [] : messages.slice(boundary) };
 }
-export async function prepare(prepared, preset, options, kind) {
+export async function prepare<T extends AdapterPreparedRequest>(prepared: T, preset: ModelPreset, options: AdapterChatOptions, kind: NonNullable<PageFoldMetadata['kind']>): Promise<T> {
   if (!state(preset).active) return prepared;
   abort(options.abortSignal);
   const cfg = config(preset);
@@ -77,7 +105,7 @@ export async function prepare(prepared, preset, options, kind) {
   // Exact input comparison avoids collisions in the original 32-bit hash cache.
   const cacheKey = JSON.stringify([packed.pdfTranscript, cfg.fontSize]);
   const cacheHit = cachedPdf?.key === cacheKey;
-  let pdf;
+  let pdf: Pdf;
   if (cacheHit) pdf = cachedPdf.pdf;
   else {
     pdf = await generateTranscriptPdf(packed.pdfTranscript || '(빈 대화)', { fontSize: cfg.fontSize });
@@ -85,26 +113,26 @@ export async function prepare(prepared, preset, options, kind) {
   }
   abort(options.abortSignal);
   const images = prefix.flatMap((m, i) => (m.images ?? []).map(img => ({ ...img, messageIndex: i + 1 })));
-  const wire = prepared.body;
+  const wire = prepared.body as PageFoldWireBody;
   if (kind === 'google') {
     // PageFold 0.2.4 fixes native Gemini PDF requests to LOW (no user option).
     wire.generationConfig = { ...wire.generationConfig, mediaResolution: 'MEDIA_RESOLUTION_LOW' };
     const original = wire.contents ?? [];
     // Build the suffix with the existing adapter so tool results/signatures retain their exact wire form.
-    let suffix = [];
+    let suffix: Record<string, unknown>[] = [];
     if (tail.length) {
       const originalChatCount = prefix.filter(m => m.role !== 'system').length;
       suffix = original.slice(originalChatCount);
     }
     wire.systemInstruction = { parts: [{ text: [packed.systemText, ...tail.filter(m => m.role === 'system').map(m => m.content)].join('\n\n') }] };
-    const parts = [{ inlineData: { mimeType: 'application/pdf', data: pdf.base64 } }];
+    const parts: Record<string, unknown>[] = [{ inlineData: { mimeType: 'application/pdf', data: pdf.base64 } }];
     for (const img of images) parts.push({ text: '메시지 ' + img.messageIndex + '의 이미지' }, { inlineData: { mimeType: img.mime ?? 'image/png', data: img.base64 } });
     wire.contents = [{ role: 'user', parts }, ...suffix];
     delete wire.cachedContent;
   } else {
     const original = wire.messages ?? [];
     const suffix = tail.length ? original.slice(prefix.length) : [];
-    const content = [{ type: 'file', file: { filename: 'pagefold-context.pdf', file_data: 'data:application/pdf;base64,' + pdf.base64 } }];
+    const content: Record<string, unknown>[] = [{ type: 'file', file: { filename: 'pagefold-context.pdf', file_data: 'data:application/pdf;base64,' + pdf.base64 } }];
     for (const img of images) content.push({ type: 'text', text: '메시지 ' + img.messageIndex + '의 이미지' }, { type: 'image_url', image_url: { url: 'data:' + (img.mime ?? 'image/png') + ';base64,' + img.base64 } });
     wire.messages = [{ role: 'system', content: packed.systemText }, { role: 'user', content }, ...suffix];
     const endpoint = new URL(prepared.url);
@@ -137,38 +165,38 @@ export async function prepare(prepared, preset, options, kind) {
 }
 
 // Add metadata to RequestInit (not the provider body); the native log collector consumes it.
-export function wrapFetch(preset, options, prepared, original) {
+export function wrapFetch(preset: ModelPreset, options: Pick<AdapterChatOptions, 'abortSignal' | 'generationId'>, prepared: Pick<AdapterPreparedRequest, '__pageFold'>, original: typeof fetch): typeof fetch {
   if (!prepared.__pageFold) return original;
   return async (url, init) => {
     abort(options.abortSignal);
     status({ presetId: preset.id, generationId: options.generationId, phase: '응답 기다리는 중', pages: prepared.__pageFold.pages });
-    const result = await original(url, { ...init, __pageFold: prepared.__pageFold });
+    const result = await original(url, { ...init, __pageFold: prepared.__pageFold } as PageFoldRequestInit);
     return result;
   };
 }
 
-export function sanitize(value) {
+export function sanitize(value: unknown): unknown {
   if (typeof value === 'string') {
     if (/^data:[^;]+;base64,/i.test(value)) return '[첨부 데이터 생략]';
     return value;
   }
   if (Array.isArray(value)) return value.map(sanitize);
   if (!value || typeof value !== 'object') return value;
-  const out = {};
+  const out: Record<string, unknown> = {};
   for (const [key, item] of Object.entries(value)) {
     if (/^(authorization|proxy-authorization|x-api-key|x-goog-api-key|api[-_]?key|access[-_]?token|refresh[-_]?token|private[-_]?key|client[-_]?secret|service[-_]?account)$/i.test(key)) out[key] = '[인증정보 제거]';
-    else if (key === 'data' && (value.mimeType || value.mime_type)) out[key] = '[첨부 데이터 생략]';
+    else if (key === 'data' && ((value as Record<string, unknown>).mimeType || (value as Record<string, unknown>).mime_type)) out[key] = '[첨부 데이터 생략]';
     else if (!key.startsWith('__pageFold')) out[key] = sanitize(item);
   }
   return out;
 }
-export function sanitizeBody(text) { try { return JSON.stringify(sanitize(JSON.parse(text))); } catch { return text; } }
-export function finalizeLogs(entries, saveBodies) {
+export function sanitizeBody<T extends string | undefined>(text: T): T { try { return JSON.stringify(sanitize(JSON.parse(text))) as T; } catch { return text; } }
+export function finalizeLogs<T extends PageFoldLogEntry>(entries: T[], saveBodies: boolean): T[] {
   for (const entry of entries) {
     if (!entry.pageFold) continue;
     const pf = entry.pageFold;
     pf.responseTokens = null;
-    let frames = [], googleUsage = false, googleResponseTokens = null;
+    let frames: UsageFrame[] = [], googleUsage = false, googleResponseTokens: number | null = null;
     try { frames = [JSON.parse(entry.responseBody)]; } catch {
       frames = String(entry.responseBody ?? '').split(/\r?\n/).filter(s => s.startsWith('data:')).flatMap(s => { try { return [JSON.parse(s.slice(5))]; } catch { return []; } });
     }
@@ -197,21 +225,21 @@ export function finalizeLogs(entries, saveBodies) {
   }
   return entries;
 }
-export function finite(v) { return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null; }
+export function finite(v: unknown): number | null { return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null; }
 
-export async function api(path, init = {}) {
-  const headers = await host.authHeaders();
+export async function api<T = unknown>(path: string, init: RequestInit = {}): Promise<T> {
+  const headers = await host.authHeaders!();
   const response = await fetch('/api/request-logs/pagefold' + path, { ...init, headers: { ...headers, 'Content-Type': 'application/json', ...init.headers } });
   if (!response.ok) throw Error(response.status === 404 ? '서버를 다시 시작하면 PDF 통계가 활성화됩니다.' : 'PDF 통계를 불러오지 못했습니다. (' + response.status + ')');
   return response.json();
 }
 
 // Operate on parsed display text only. Provider echoes and signature-bearing raw responses stay untouched.
-export function responseRestorer(prepared) {
+export function responseRestorer(prepared: DisplayRequest): NewlineRestorer {
   if (!prepared.__pageFold || prepared.__pageFold.structuredOutput) return { push: text => text, flush: () => '' };
   return createStreamingNewlineRestorer();
 }
-export function restoreParsed(prepared, parsed) {
+export function restoreParsed<T extends Pick<AdapterChatResponse, 'text'>>(prepared: DisplayRequest, parsed: T): T {
   if (!prepared.__pageFold || prepared.__pageFold.structuredOutput) return parsed;
   return { ...parsed, text: restoreResponseNewlines(parsed.text) };
 }

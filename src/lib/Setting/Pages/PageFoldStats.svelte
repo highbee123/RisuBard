@@ -1,6 +1,7 @@
 <script lang="ts">
+    import type { PageFoldMetadata } from 'src/ts/preset/pageFold/types'
     import { language } from 'src/lang'
-    import { api } from 'src/ts/preset/pageFold/runtime.mjs'
+    import { api } from 'src/ts/preset/pageFold/runtime'
     import { alertConfirm } from 'src/ts/alert'
     import ShDialog from 'src/lib/UI/GUI/ShDialog.svelte'
     import ShButton from 'src/lib/UI/GUI/ShButton.svelte'
@@ -12,7 +13,7 @@
     let { open = $bindable(false), presetId = '' }: { open?: boolean, presetId?: string } = $props()
     const l = language.pageFold
     const n = (v: unknown) => typeof v === 'number' && Number.isFinite(v) ? v.toLocaleString(undefined, { maximumFractionDigits: 1 }) : '—'
-    type Row = { id: number, timestamp: number, model: string, inputTokens?: number, outputTokens?: number, durationMs?: number, aborted?: boolean, success?: boolean, requestBody?: string, responseBody?: string, requestHeaders?: string, pageFold: Record<string, any> }
+    type Row = { id: number, timestamp: number, model: string, inputTokens?: number, outputTokens?: number, durationMs?: number, aborted?: boolean, success?: boolean, requestBody?: string, responseBody?: string, requestHeaders?: string, pageFold: PageFoldMetadata }
     type Report = { total: Record<string, number>, byModel: Record<string, any>[], daily: Record<string, any>[], rows: Row[], nextBefore?: string, filters: { presets: { id: string, name: string }[], models: string[], providers: string[], sources: string[] } }
     let scope = $state(''), period = $state('0'), model = $state('')
     let report = $state<Report | null>(null), rows = $state<Row[]>([])
@@ -24,7 +25,7 @@
         const seq = ++sequence
         loading = true; error = ''
         try {
-            const data: Report = await api(q + (append && report?.nextBefore ? '&before=' + report.nextBefore : ''))
+            const data: Report = await api<Report>(q + (append && report?.nextBefore ? '&before=' + report.nextBefore : ''))
             if (seq !== sequence) return
             report = data; rows = append ? [...rows, ...data.rows] : data.rows
         } catch (e) { if (seq === sequence) error = e instanceof Error ? e.message : String(e) }
@@ -51,7 +52,7 @@
     async function openDetail(id: number) {
         const seq = ++detailSequence
         detailOpen = true; detail = null; detailError = ''; selectedTab = 3
-        try { const data = await api('/' + id); if (seq === detailSequence) detail = data.content }
+        try { const data = await api<{ content: Row }>('/' + id); if (seq === detailSequence) detail = data.content }
         catch (e) { if (seq === detailSequence) detailError = e instanceof Error ? e.message : String(e) }
     }
     const detailText = $derived.by(() => {
