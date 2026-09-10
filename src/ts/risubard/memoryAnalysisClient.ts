@@ -497,6 +497,7 @@ export function projectRecentMemoryMessages(
     limit = 12,
     throughMessageId?: string,
     firstMessage?: MemoryAnalysisMessage,
+    includeUserMessages = true,
 ): MemoryAnalysisMessage[] {
     const boundedLimit = Number.isSafeInteger(limit)
         ? Math.max(1, limit)
@@ -516,6 +517,7 @@ export function projectRecentMemoryMessages(
             && message.chatId.trim().length > 0
             && !message.isComment
             && !message.disabled
+            && (includeUserMessages || message.role !== 'user')
         )
     const projected: MemoryAnalysisMessage[] = eligible
         .slice(-boundedLimit)

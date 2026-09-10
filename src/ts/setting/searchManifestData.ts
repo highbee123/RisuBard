@@ -166,12 +166,6 @@ export const searchManifestEntries: ManualSearchEntry[] = [
     },
     // ── Standalone hardcoded pages
     {
-        id: 'manual.page.migration',
-        label: () => language.migration,
-        keywords: ['migration', 'import', 'export', 'backup', 'restore', '이전', '백업', '가져오기', '내보내기'],
-        route: SettingsRoute.Migration,
-    },
-    {
         id: 'manual.page.plugin',
         label: () => language.plugin,
         keywords: ['plugin', '플러그인'],

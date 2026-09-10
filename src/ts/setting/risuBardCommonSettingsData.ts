@@ -67,6 +67,36 @@ export const risuBardCommonSettingsItems: SettingItem[] = [
         keywords: ['analysis', 'wiki', 'recent messages', '분석', '위키', '최근 대화'],
     },
     {
+        id: 'risubard.chat.analysisExcludeUserMessages',
+        type: 'check',
+        labelKey: 'risuBardAnalysisExcludeUsers',
+        helpKey: 'risuBardAnalysisExcludeUsers',
+        bindKey: 'risuBardAnalysisExcludeUserMessages',
+        keywords: ['analysis', 'exclude user messages', '분석', '사용자 메시지 제외'],
+    },
+    {
+        id: 'risubard.chat.bardChan',
+        type: 'check',
+        labelKey: 'risuBardBardChanEnabled',
+        helpKey: 'risuBardBardChanEnabled',
+        bindKey: 'risuBardBardChanEnabled',
+        keywords: ['Bard-chan', 'reranker', 'auxiliary model', '바드쨩', '재순위', '보조 모델'],
+    },
+    {
+        id: 'risubard.chat.bardChanModel',
+        type: 'select',
+        labelKey: 'risuBardBardChanModelMode',
+        helpKey: 'risuBardBardChanModelMode',
+        bindKey: 'risuBardBardChanModelMode',
+        options: {
+            selectOptions: [
+                { value: 'memory', labelKey: 'risuBardBardChanModelAuxiliary' },
+                { value: 'model', labelKey: 'risuBardBardChanModelMain' },
+            ],
+        },
+        keywords: ['Bard-chan', 'reranker', 'main model', 'auxiliary model', '바드쨩', '메인 모델', '보조 모델'],
+    },
+    {
         id: 'risubard.chat.inquiryTargetTokenBudget',
         type: 'number',
         labelKey: 'risuBardInquiryTargetTokenBudget',

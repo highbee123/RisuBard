@@ -25,6 +25,8 @@ export type RisuBardCanonicalWritingStyle =
 
 export interface RisuBardChatSettings {
     risuBardModelMode?: 'memory' | 'model'
+    risuBardBardChanEnabled?: boolean
+    risuBardBardChanModelMode?: 'memory' | 'model'
     showRequestStatus?: boolean
     risuBardInquiryTargetTokenBudget?: number
     risuBardInquiryEventTokenBudget?: number
@@ -38,6 +40,7 @@ export interface RisuBardChatSettings {
     risuBardRecentMessageCount?: number
     risuBardResponseMessageCount?: number
     risuBardResponseExcludeUserMessages?: boolean
+    risuBardAnalysisExcludeUserMessages?: boolean
     risuBardCanonicalWritingStyle?: RisuBardCanonicalWritingStyle
     risuBardCanonicalCustomStyle?: string
     risuBardWikiWritingLanguage?: WikiWritingLanguage
@@ -52,6 +55,8 @@ export interface RisuBardChatSettings {
 
 export interface ResolvedRisuBardChatSettings {
     risuBardModelMode: 'memory' | 'model'
+    risuBardBardChanEnabled: boolean
+    risuBardBardChanModelMode: 'memory' | 'model'
     showRequestStatus: boolean
     risuBardInquiryTargetTokenBudget: number
     risuBardInquiryEventTokenBudget: number
@@ -65,6 +70,7 @@ export interface ResolvedRisuBardChatSettings {
     risuBardRecentMessageCount: number
     risuBardResponseMessageCount: number
     risuBardResponseExcludeUserMessages: boolean
+    risuBardAnalysisExcludeUserMessages: boolean
     risuBardCanonicalWritingStyle: RisuBardCanonicalWritingStyle
     risuBardCanonicalCustomStyle: string
     risuBardWikiWritingLanguage: WikiWritingLanguage
@@ -103,6 +109,9 @@ export function resolveRisuBardChatSettings(
     )
     return {
         risuBardModelMode: value('risuBardModelMode') === 'model' ? 'model' : 'memory',
+        risuBardBardChanEnabled: value('risuBardBardChanEnabled') === true,
+        risuBardBardChanModelMode:
+            value('risuBardBardChanModelMode') === 'model' ? 'model' : 'memory',
         showRequestStatus: value('showRequestStatus') !== false,
         risuBardInquiryTargetTokenBudget: inquiry.target,
         risuBardInquiryEventTokenBudget: inquiry.events,
@@ -132,6 +141,8 @@ export function resolveRisuBardChatSettings(
         ),
         risuBardResponseExcludeUserMessages:
             value('risuBardResponseExcludeUserMessages') === true,
+        risuBardAnalysisExcludeUserMessages:
+            value('risuBardAnalysisExcludeUserMessages') === true,
         risuBardCanonicalWritingStyle: normalizeRisuBardCanonicalWritingStyle(
             value('risuBardCanonicalWritingStyle')
         ),

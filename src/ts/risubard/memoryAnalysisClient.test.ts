@@ -678,6 +678,18 @@ describe('stored response memory analysis', () => {
         expect(projected.some((message) => message.messageId === 'id-150')).toBe(false)
     })
 
+    test('can exclude user messages from wiki analysis context', () => {
+        expect(projectRecentMemoryMessages([
+            { role: 'user', data: 'user detail', chatId: 'user-1' },
+            { role: 'char', data: 'assistant fact', chatId: 'assistant-1' },
+            { role: 'user', data: 'later user detail', chatId: 'user-2' },
+            { role: 'char', data: 'later assistant fact', chatId: 'assistant-2' },
+        ], 4, undefined, undefined, false)).toEqual([
+            { messageId: 'assistant-1', role: 'assistant', content: 'assistant fact' },
+            { messageId: 'assistant-2', role: 'assistant', content: 'later assistant fact' },
+        ])
+    })
+
     test('projects the configured recent raw context only through the confirmed message', () => {
         const messages = [
             { role: 'user', data: 'old', chatId: 'user-0' },

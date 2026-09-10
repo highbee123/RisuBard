@@ -15,6 +15,7 @@ import {
     type ChatContentPageEnvelope,
 } from './chatContentPage'
 import { isCanonicalFilesChangedResponse } from './canonicalConflict'
+import { loadingActivity, describeNativeRead } from '../gui/loadingActivity'
 
 const CHAT_CONTENT_TRANSFER_PAGE_SIZE = 200
 const CHAT_CONTENT_TRANSFER_CONCURRENCY = 4
@@ -87,7 +88,26 @@ export interface SettingsBackupEstimate {
     moduleAssets: { count: number, bytes: number, moduleCount: number }
 }
 
-export type BackupImportPhase = 'validating' | 'publishing' | 'finalizing'
+export type V2ImportItemKind = 'character' | 'module' | 'persona' | 'prompt' | 'lorebook'
+export interface V2ImportSelection { kind: V2ImportItemKind; id: string }
+export interface V2ImportItem extends V2ImportSelection {
+    name: string
+    dependencies: Array<V2ImportSelection & { name: string }>
+}
+export interface V2ImportPreview {
+    sourceRoot: string
+    formatVersion: 2
+    revision: string
+    items: V2ImportItem[]
+}
+export interface V2ImportResult {
+    ok: true
+    imported: { characters: number; modules: number; personas: number; prompts: number; lorebooks: number }
+    remappedIds: Record<string, string>
+    includedDependencies: number
+}
+
+export type BackupImportPhase = 'validating' | 'converting' | 'verifying' | 'publishing' | 'finalizing'
 
 export class NodeStorage{
     private static readonly BULK_WRITE_CLIENT_BATCH = 200
@@ -115,6 +135,7 @@ export class NodeStorage{
     private static sessionInitialized = false
     private static sessionPending: Promise<void> | null = null
     private refreshPending: Promise<string> | null = null
+    private authPending: Promise<void> | null = null
 
     async createAuth(){
         const now = Date.now()
@@ -250,6 +271,26 @@ export class NodeStorage{
         return response
     }
 
+    async nativeRequest(path: string, body?: unknown): Promise<any> {
+        const label = describeNativeRead(path, body)
+        return label ? loadingActivity.read(label, () => this.performNativeRequest(path, body)) : this.performNativeRequest(path, body)
+    }
+
+    private async performNativeRequest(path: string, body?: unknown): Promise<any> {
+        const response = await this.authFetch(path, body === undefined ? {} : {
+            method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+        })
+        const result = await response.json()
+        if (!response.ok) {
+            const error = new Error(response.status === 409
+                ? `Native document conflict (409). Local edits were retained. ${result.message ?? result.error ?? ''}`
+                : `Native document request failed (${response.status}): ${result.message ?? result.error ?? ''}`)
+            Object.assign(error, { status: response.status, details: result })
+            throw error
+        }
+        return result
+    }
+
     async setItem(key:string, value:Uint8Array, etag?:string): Promise<string | null> {
         const headers: Record<string, string> = {
             'content-type': 'application/octet-stream',
@@ -281,6 +322,11 @@ export class NodeStorage{
         const nextEtag = data.etag as string | undefined
         if (key === 'database/database.bin' && nextEtag) {
             this._lastDbEtag = nextEtag
+        }
+        if (key === 'database/database.bin' && data.canonicalReferencesChanged === true) {
+            // The save is durable; reload its normalized asset references before
+            // preparing another patch from the client's previous key names.
+            throw new ConflictError('Canonical asset references changed; reload the saved database', nextEtag ?? null, true)
         }
         return nextEtag ?? null
     }
@@ -362,6 +408,13 @@ export class NodeStorage{
     }
 
     private async checkAuth(){
+        if (this.authPending) return this.authPending
+        this.authPending = this.performAuthCheck()
+        try { await this.authPending }
+        finally { this.authPending = null }
+    }
+
+    private async performAuthCheck(){
 
         if(!this.authChecked){
             const data = await (await fetch('/api/test_auth',{
@@ -468,7 +521,7 @@ export class NodeStorage{
             this._lastDbEtag = nextEtag
         }
         const persistWarning = data.persistWarning as PersistWarning | undefined
-        return { success: true, etag: nextEtag, persistWarning }
+        return { success: true, etag: nextEtag, persistWarning, ...(data.canonicalReferencesChanged === true ? { canonicalFilesChanged: true } : {}) }
     }
 
     // ── Bulk asset operations (3-2-B) ──────────────────────────────────────────
@@ -508,15 +561,23 @@ export class NodeStorage{
     async setItems(entries: {key: string, value: Uint8Array}[]) {
         for (let i = 0; i < entries.length; i += NodeStorage.BULK_WRITE_CLIENT_BATCH) {
             const batch = entries.slice(i, i + NodeStorage.BULK_WRITE_CLIENT_BATCH)
-            const body = batch.map(e => ({
-                key: e.key,
-                value: Buffer.from(e.value).toString('base64')
-            }))
+            const keys = batch.map(entry => new TextEncoder().encode(entry.key))
+            const byteLength = 4 + batch.reduce((total, entry, index) => total + 8 + keys[index].byteLength + entry.value.byteLength, 0)
+            const body = new Uint8Array(byteLength)
+            const view = new DataView(body.buffer)
+            let offset = 0
+            view.setUint32(offset, batch.length); offset += 4
+            for (let index = 0; index < batch.length; index++) {
+                view.setUint32(offset, keys[index].byteLength); offset += 4
+                body.set(keys[index], offset); offset += keys[index].byteLength
+                view.setUint32(offset, batch[index].value.byteLength); offset += 4
+                body.set(batch[index].value, offset); offset += batch[index].value.byteLength
+            }
             const da = await this.authFetch('/api/assets/bulk-write', {
                 method: 'POST',
-                body: JSON.stringify(body),
+                body,
                 headers: {
-                    'content-type': 'application/json'
+                    'content-type': 'application/octet-stream'
                 }
             })
             if (da.status < 200 || da.status >= 300) throw 'setItems Error'
@@ -604,7 +665,7 @@ export class NodeStorage{
                         // progress through the same callback for UI continuity.
                         onProgress?.(msg.bytes, msg.totalBytes)
                     } else if (msg.type === 'phase') {
-                        onProgress?.(msg.bytes, msg.totalBytes, msg.phase)
+                        onProgress?.(msg.current ?? msg.bytes, msg.total ?? msg.totalBytes, msg.phase)
                     } else if (msg.type === 'done') {
                         result = msg
                     } else if (msg.type === 'error') {
@@ -722,7 +783,7 @@ export class NodeStorage{
                 if (msg.type === 'progress') {
                     onProgress?.(msg.bytes, msg.totalBytes)
                 } else if (msg.type === 'phase') {
-                    onProgress?.(msg.bytes, msg.totalBytes, msg.phase)
+                    onProgress?.(msg.current ?? msg.bytes, msg.total ?? msg.totalBytes, msg.phase)
                 } else if (msg.type === 'done') {
                     result = msg
                 } else if (msg.type === 'error') {
@@ -818,6 +879,57 @@ export class NodeStorage{
             body: encoded,
         })
         if (da.status < 200 || da.status >= 300) throw new Error(`saveChatContent error: ${da.status}`)
+    }
+
+    async previewV2ItemImport(sourcePath: string): Promise<V2ImportPreview> {
+        const response = await this.authFetch('/api/v2-items/preview', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ sourcePath }),
+        })
+        const body = await response.json().catch(() => ({}))
+        if (!response.ok) throw new Error(body.error || `V2 preview error: ${response.status}`)
+        return body
+    }
+
+    async executeV2ItemImport(
+        sourcePath: string,
+        revision: string,
+        selection: V2ImportSelection[],
+        onProgress?: (percent: number) => void,
+    ): Promise<V2ImportResult> {
+        const response = await this.authFetch('/api/v2-items/import', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', accept: 'application/x-ndjson' },
+            body: JSON.stringify({ sourcePath, revision, selection }),
+        })
+        if (!response.ok || !response.body) {
+            const body = await response.json().catch(() => ({}))
+            throw new Error(body.error || `V2 import error: ${response.status}`)
+        }
+        const reader = response.body.getReader()
+        const decoder = new TextDecoder()
+        let buffer = ''
+        let result: V2ImportResult | null = null
+        for (;;) {
+            const { done, value } = await reader.read()
+            buffer += decoder.decode(value, { stream: !done })
+            const lines = buffer.split('\n')
+            buffer = lines.pop() ?? ''
+            for (const line of lines) {
+                if (!line) continue
+                const message = JSON.parse(line)
+                if (message.type === 'progress') {
+                    const total = Math.max(1, Number(message.total) || 1)
+                    onProgress?.(Math.max(0, Math.min(100, Math.floor((Number(message.current) || 0) * 100 / total))))
+                } else if (message.type === 'done') result = message
+                else if (message.type === 'error') throw new Error(message.message || 'V2 item import failed')
+            }
+            if (done) break
+        }
+        if (!result) throw new Error('V2 item import ended without a result')
+        onProgress?.(100)
+        return result
     }
 
     // ── Save-folder migration ─────────────────────────────────────────────────

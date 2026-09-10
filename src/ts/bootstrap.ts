@@ -10,7 +10,6 @@ import { loadPlugins } from "./plugins/plugins.svelte";
 import { alertError, alertMd, alertTOS, waitAlert, alertConfirm, alertInput } from "./alert";
 import { characterURLImport } from "./characterCards";
 import { defaultJailbreak, defaultMainPrompt, oldJailbreak, oldMainPrompt } from "./storage/defaultPrompts";
-import { decodeRisuSave, encodeRisuSaveLegacy } from "./storage/risuSave";
 import { updateAnimationSpeed } from "./gui/animation";
 import { updateColorScheme, updateTextThemeAndCSS } from "./gui/colorscheme";
 import { applyEarlyLanguage, changeLanguage, language } from "src/lang";
@@ -22,8 +21,7 @@ import { moduleUpdate } from "./process/modules";
 import {
     forageStorage,
     saveDb,
-    setPatchSyncBaseline,
-    getDbBackups,
+    saving,
     getUncleanables,
     getBasename,
     checkCharOrder
@@ -32,6 +30,8 @@ import { registerModelDynamic } from "./model/modellist";
 import { initModelJobRecovery } from "./process/request/jobRecovery";
 import { convertStubsToPlaceholders } from "./storage/chatStorage";
 import { isChatStub, purgeUnsupportedGroupChats } from "./storage/database.svelte";
+import { normalizeChat } from './storage/database.svelte'
+import { startNativeRuntime, isNativeRuntime, ensureActiveModulesReady } from './storage/nativeRuntime'
 import { normalizeFirstMessageStudioProject } from './firstMessageStudio'
 import { canDeleteAssetsAfterPluginStorageScan, collectNestedAssetReferences, isAutoAssetCleanupEnabled, shouldDeleteUnreferencedAsset } from './storage/assetRefs'
 
@@ -48,36 +48,14 @@ export async function loadData() {
                 await forageStorage.Init()
 
                 LoadingStatusState.text = language.startupLoading.localSave
-                let gotStorage: Uint8Array = await forageStorage.getItem('database/database.bin') as unknown as Uint8Array
-                LoadingStatusState.text = language.startupLoading.decodingLocalSave
-                if (checkNullish(gotStorage)) {
-                    createdFreshDatabase = true
-                    gotStorage = encodeRisuSaveLegacy({})
-                    await forageStorage.setItem('database/database.bin', gotStorage)
-                }
-                try {
-                    const decoded = await decodeRisuSave(gotStorage)
-                    setPatchSyncBaseline(decoded)
-                    setDatabase(decoded)
-                } catch (error) {
-                    console.error(error)
-                    const backups = await getDbBackups()
-                    let backupLoaded = false
-                    for (const backup of backups) {
-                        try {
-                            LoadingStatusState.text = language.startupLoading.readingBackup.replace('{0}', String(backup))
-                            const backupData: Uint8Array = await forageStorage.getItem(`database/dbbackup-${backup}.bin`) as unknown as Uint8Array
-                            const backupDecoded = await decodeRisuSave(backupData)
-                            setPatchSyncBaseline(backupDecoded)
-                            setDatabase(backupDecoded)
-                            backupLoaded = true
-                            break
-                        } catch (error) { }
-                    }
-                    if (!backupLoaded) {
-                        throw "Forage: Your save file is corrupted"
-                    }
-                }
+                const runtime = startNativeRuntime(
+                    forageStorage.realStorage.nativeRequest.bind(forageStorage.realStorage), getDatabase, normalizeChat,
+                    state => { saving.state = state },
+                )
+                const initial = await runtime.bootstrap()
+                createdFreshDatabase = !initial.didFirstSetup && initial.characters.length === 0
+                setDatabase(initial)
+                runtime.acknowledgeNormalization()
 
                 if (getDatabase().didFirstSetup) {
                     characterURLImport()
@@ -166,6 +144,7 @@ export async function loadData() {
             assignIds()
             registerModelDynamic()
             saveDb()
+            await ensureActiveModulesReady()
             moduleUpdate()
             // cleanChunks는 화면 진입 후 유휴 시간에 실행 (부트 블로킹 제거)
             setTimeout(() => {
@@ -260,6 +239,12 @@ function updateHeightMode() {
  */
 async function checkNewFormat(): Promise<void> {
     let db = getDatabase();
+    // Native documents are normalized individually when requested. Running legacy
+    // migrations over summary placeholders would manufacture writable empty data.
+    if (isNativeRuntime()) {
+        checkCharOrder()
+        return
+    }
 
     // Check data integrity
     db.characters = db.characters.map((v) => {
@@ -456,6 +441,8 @@ async function checkNewFormat(): Promise<void> {
  * Purges chunks of data that are not needed.
  */
 async function cleanChunks() {
+    // A partial UI cache cannot prove that an asset is unreferenced.
+    if (isNativeRuntime()) return
     const db = getDatabase()
     const assetCleanupRequested = isAutoAssetCleanupEnabled(db)
     const remoteKeysPromise = forageStorage.keys('remotes/')
@@ -533,6 +520,7 @@ async function cleanChunks() {
  * Assigns unique IDs to characters and chats.
  */
 function assignIds() {
+    if (isNativeRuntime()) return
     if (!DBState?.db?.characters) {
         return
     }

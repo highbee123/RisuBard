@@ -263,6 +263,13 @@ describe('actual narrative inquiry prompt', () => {
                 tokens: 8,
                 priority: 120,
             }],
+            rerankCandidates: [{
+                documentId: 'event-bridge',
+                type: 'event',
+                title: 'Bridge collapse',
+                excerpt: 'The bridge collapsed.',
+                score: 8.5,
+            }],
             metrics: {
                 candidateCount: 1,
                 inspectedNodeCount: 1,
@@ -307,6 +314,13 @@ describe('actual narrative inquiry prompt', () => {
         expect(prompt).toContain('Lina is at the bridge.')
         expect(prompt).toContain('narrative-memory:event:bridge')
         expect(prompt).toContain('[Event] The bridge collapsed.')
+        expect(inquiry.rerankCandidates).toEqual([{
+            documentId: 'event-bridge',
+            type: 'event',
+            title: 'Bridge collapse',
+            excerpt: 'The bridge collapsed.',
+            score: 8.5,
+        }])
         expect(fetchImpl).toHaveBeenCalledWith(
             '/api/risubard/memory/inquiry',
             expect.objectContaining({

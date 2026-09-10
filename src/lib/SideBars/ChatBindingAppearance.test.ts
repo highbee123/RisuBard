@@ -3,6 +3,7 @@ import { mount, tick, unmount } from 'svelte'
 import { get } from 'svelte/store'
 import { DBState, selectedCharID, openPersonaList, openPersonaManager, personaSelectCallback } from 'src/ts/stores.svelte'
 import { alertConfirmMulti, alertSelect } from 'src/ts/alert'
+import { changeUserPersona } from 'src/ts/persona'
 import PersonaBind from './PersonaBind.svelte'
 import PromptBind from './PromptBind.svelte'
 
@@ -21,6 +22,7 @@ vi.mock('src/ts/alert', () => ({
     alertConfirmMulti: vi.fn(), alertSelect: vi.fn(), notifySuccess: vi.fn(), alertMd: vi.fn(),
 }))
 vi.mock('src/ts/characters', () => ({ getCharImage: async (icon: string) => icon }))
+vi.mock('src/ts/persona', () => ({ changeUserPersona: vi.fn() }))
 vi.mock('src/lang', () => ({ language: {
     personaBindingLabel: '페르소나 바인딩', promptBindingLabel: '프롬프트 바인딩',
     promptPresetParamsUse: '파라미터', none: '없음',
@@ -30,7 +32,10 @@ let mounted: ReturnType<typeof mount> | undefined
 
 beforeEach(() => {
     DBState.db = {
-        personas: [{ id: 'persona-1', name: '페르소나', icon: '', personaPrompt: '' }],
+        personas: [
+            { id: 'persona-1', name: '페르소나', icon: '', personaPrompt: '' },
+            { id: 'persona-2', name: '다른 페르소나', icon: '', personaPrompt: '' },
+        ],
         selectedPersona: 0,
         botPresets: [{ id: 'preset-1', name: '프롬프트' }], botPresetsId: 0,
         characters: [0, 1].map(() => ({ chatPage: 0, chats: [{
@@ -43,6 +48,10 @@ beforeEach(() => {
     personaSelectCallback.set(null)
     vi.mocked(alertSelect).mockReset()
     vi.mocked(alertConfirmMulti).mockReset()
+    vi.mocked(changeUserPersona).mockReset()
+    vi.mocked(changeUserPersona).mockImplementation((index) => {
+        DBState.db.selectedPersona = index
+    })
 })
 
 afterEach(async () => {
@@ -115,6 +124,25 @@ test.each([false, true])('opens the manager instead of the legacy picker when re
     expect(chat.bindedPersona).toBe(bound ? 'persona-1' : '')
     expect(DBState.db.selectedPersona).toBe(0)
     expect(onBindingChange).toHaveBeenCalledOnce()
+})
+
+test('remembers a globally scoped chat selection as the new global default', async () => {
+    const bindingTarget = { bindedPersona: '' }
+    vi.mocked(alertSelect).mockResolvedValue('1')
+    mounted = mount(PersonaBind, { target: document.body, props: { bindingTarget } })
+    await tick()
+    document.body.querySelector('button')!.click()
+
+    await vi.waitFor(() => expect(get(personaSelectCallback)).toBeTypeOf('function'))
+    get(personaSelectCallback)!({
+        persona: DBState.db.personas[1],
+        index: 1,
+        scope: 'global',
+    })
+
+    expect(bindingTarget.bindedPersona).toBe('persona-2')
+    expect(changeUserPersona).toHaveBeenCalledWith(1)
+    expect(DBState.db.selectedPersona).toBe(1)
 })
 
 test('does not open either persona picker when the selection menu is cancelled', async () => {

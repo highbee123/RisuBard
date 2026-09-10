@@ -1,5 +1,6 @@
 <script lang="ts">
     import { registerSettingsBack } from "src/ts/setting/settingsBack";
+    import { ensureModuleReady, isNativeRuntime, nativeRuntime } from 'src/ts/storage/nativeRuntime';
     import { language } from "src/lang";
     import SettingPage from "src/lib/UI/GUI/SettingPage.svelte";
     
@@ -66,12 +67,14 @@
             [
                 ...DBState.db.personas,
                 ...DBState.db.characters.flatMap((character) => character.personas ?? []),
+                ...(isNativeRuntime() ? Object.keys(DBState.db.personaEnabledModules ?? {}).map(id => ({ id })) : []),
             ],
             DBState.db.modules.map((module) => module.id),
         )
     }
 
-    function openPersonaAssignments(moduleId:string){
+    async function openPersonaAssignments(moduleId:string){
+        if (nativeRuntime) for (const character of [...DBState.db.characters]) await nativeRuntime.ensureCharacter(character.chaId)
         normalizeAssignments()
         personaAssignmentModuleId = moduleId
         personaSearch = ''
@@ -82,7 +85,8 @@
         return DBState.db.personaEnabledModules?.[personaId]?.includes(personaAssignmentModuleId) ?? false
     }
 
-    function togglePersonaAssignment(personaId:string){
+    async function togglePersonaAssignment(personaId:string){
+        await ensureModuleReady(personaAssignmentModuleId)
         const assignments = { ...(DBState.db.personaEnabledModules ?? {}) }
         const moduleIds = [...(assignments[personaId] ?? [])]
         const index = moduleIds.indexOf(personaAssignmentModuleId)
@@ -215,6 +219,7 @@
                                 DBState.db.enabledModules.splice(DBState.db.enabledModules.indexOf(rmodule.id), 1)
                             }
                             else{
+                                await ensureModuleReady(rmodule.id)
                                 DBState.db.enabledModules.push(rmodule.id)
                             }
                             DBState.db.enabledModules = DBState.db.enabledModules
@@ -236,7 +241,9 @@
                         {#if !rmodule.mcp}
                             <ShButton variant="outline" size="icon-xs" aria-label={language.edit} title={language.edit} onclick={async (e) => {
                                 e.stopPropagation()
-                                tempModule = rmodule
+                                await ensureModuleReady(rmodule.id, true)
+                                tempModule = DBState.db.modules.find(module => module.id === rmodule.id)
+                                if (!tempModule) return
                                 mode = 2
                             }}>
                                 <SquarePen size={18}/>

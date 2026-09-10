@@ -8,7 +8,6 @@
     import RisuBardCommonSettings from './Pages/RisuBardCommonSettings.svelte'
     import RisuBardWikiPromptSettings from './Pages/RisuBardWikiPromptSettings.svelte'
     import InlayImageGallery from './Pages/InlayImageGallery.svelte'
-    import MigrationSettings from './Pages/MigrationSettings.svelte'
     import ModuleSettings from './Pages/Module/ModuleSettings.svelte'
     import NotificationSoundSettings from './Pages/NotificationSoundSettings.svelte'
     import PluginSettings from './Pages/PluginSettings.svelte'
@@ -24,7 +23,7 @@
     import DevPanel from 'src/lib/_dev/DevPanel.svelte'
     import { isLite } from 'src/ts/lite'
     import { MobileGUI, SettingsMenuIndex, settingsOpen } from 'src/ts/stores.svelte'
-    import { openSettings, SettingsRoute, type SettingsRouteValue } from 'src/ts/routing'
+    import { openSettings, SettingsRoute, SystemTab, type SettingsRouteValue } from 'src/ts/routing'
     import { getVisibleSettingsSections, isExperienceSettingsRoute } from 'src/ts/setting/settingsNavigation'
     import { isAISettingsRoute } from 'src/ts/setting/aiSettingsSections'
 
@@ -42,6 +41,10 @@
     }))
 
     $effect(() => {
+        if ($SettingsMenuIndex === SettingsRoute.Migration) {
+            openSettings(SettingsRoute.System, SystemTab.Backups)
+            return
+        }
         if (isDesktop && $SettingsMenuIndex === SettingsRoute.None) {
             $SettingsMenuIndex = $isLite ? SettingsRoute.Language : SettingsRoute.ModelPreset
         }
@@ -106,9 +109,7 @@
 
                 {#key $SettingsMenuIndex}
                     <div class="settings-page" class:settings-page--collection={$SettingsMenuIndex === SettingsRoute.Module || $SettingsMenuIndex === SettingsRoute.Plugin}>
-                        {#if $SettingsMenuIndex === SettingsRoute.Migration}
-                            <MigrationSettings />
-                        {:else if $SettingsMenuIndex === SettingsRoute.PromptPreset}
+                        {#if $SettingsMenuIndex === SettingsRoute.PromptPreset}
                             <PromptPresetSettings />
                         {:else if isAISettingsRoute($SettingsMenuIndex as SettingsRouteValue)}
                             <AISettingsWorkspace

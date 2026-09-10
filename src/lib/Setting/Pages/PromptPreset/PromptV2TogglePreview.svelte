@@ -38,14 +38,14 @@
 
         {#if item.type === 'group'}
             <ShAccordion class="w-full" name={item.label}>
-                <div class="flex flex-col gap-1 px-1 pb-1">
+                <div class="flex flex-col px-1 pb-1">
                     {@render renderItems(item.children)}
                 </div>
             </ShAccordion>
         {:else if item.type === 'caption'}
-            <p class="px-1 pt-1 text-xs leading-relaxed text-textcolor2">{item.label}</p>
+            <p class="px-1 py-0.5 text-xs leading-snug text-textcolor2">{item.label}</p>
         {:else if item.type === 'divider'}
-            <div class="flex min-h-7 items-center gap-2 px-1">
+            <div class="flex min-h-6 items-center gap-2 px-1">
                 {#if item.label}<span class="text-xs text-textcolor2">{item.label}</span>{/if}
                 <div class="grow border-t border-darkborderc"></div>
             </div>
@@ -60,6 +60,7 @@
                 {#if definition.type === 'select'}
                     <SelectInput
                         className="w-32 shrink-0"
+                        size="sm"
                         value={previewValues[definition.key] ?? '0'}
                         onchange={(event) => updateValue(definition.key, event.currentTarget.value)}
                     >
@@ -116,7 +117,7 @@
         </ShButton>
 
         {#if tree.items.length > 0}
-            <div class="flex flex-col gap-1">
+            <div class="flex flex-col">
                 {@render renderItems(tree.items)}
             </div>
         {:else}
@@ -132,13 +133,13 @@
 <style>
     .toggle-preview-row {
         display: flex;
-        min-height: 2.75rem;
+        min-height: 2.5rem;
         align-items: center;
         justify-content: space-between;
         gap: .75rem;
         border-left: 2px solid transparent;
         border-radius: .5rem;
-        padding: .35rem .4rem .35rem .55rem;
+        padding: .25rem .4rem .25rem .55rem;
         transition: background-color 160ms ease, border-color 160ms ease;
     }
 

@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { get_encoding } from '@dqbd/tiktoken'
 import { afterEach, describe, expect, test, vi } from 'vitest'
 import { ModelOutputError } from '../../packages/risubard-core/src/modelResponse'
+import { canonicalTurnNeedsRetry } from '../../src/ts/risubard/canonicalTurnReceipt'
 import type {
     MemoryAnalysisInput,
     MemoryAnalysisModelRequest,
@@ -85,6 +86,41 @@ afterEach(async () => {
 })
 
 describe('memory analysis runner', () => {
+    test('keeps a partially saved turn retryable while preserving its event and successful changes', async () => {
+        const saveConfirmedTurn = vi.fn(async () => ({
+            id: 'event.arrival', type: 'event' as const, status: 'active' as const,
+            title: 'Arrival', relativePath: 'events/arrival.md',
+            sourceMessageIds: ['assistant-1'], updated: '2026-09-10T00:00:00Z',
+            content: '## Arrival\n\nA and B arrived.', links: [],
+            contextMode: 'auto' as const, contentHash: 'event-hash',
+        }))
+        const saveCanonicalDocument = vi.fn(async (input) => {
+            if (input.title === 'B') throw new Error('fetch failed')
+            return { ...input, id: 'character.A', contentHash: 'saved-hash', relativePath: 'characters/A.md' }
+        })
+        const runner = createMemoryAnalysisRunner({
+            memoryService: { loadState: vi.fn(), applyDelta: vi.fn() }, nativeV2Analysis: true,
+            markdownWikiService: {
+                inquire: vi.fn(async () => ({ graphRevision: 0, sources: [] })),
+                loadDocuments: vi.fn(async () => []), saveConfirmedTurn, saveCanonicalDocument,
+            },
+            onError: vi.fn(),
+            analyze: async (request) => request.format === 'memory-draft'
+                ? JSON.stringify({ schemaVersion: 1, title: 'Arrival', establishedEvents: ['A and B arrived.'],
+                    stateChanges: [], characterKnowledge: [], persistentFacts: [], openContinuity: [],
+                    canonicalUpdateCandidates: ['A', 'B'].map(title => ({ type: 'character', title,
+                        reason: 'Arrived', action: 'create', targetDocumentId: null, confidence: 0.99 })) })
+                : canonicalBatch('## A\n\n### Current State\n\n- Arrived.', '## B\n\n### Current State\n\n- Arrived.'),
+        })
+        const result = await runner.run({ characterId: 'character', chatId: 'chat',
+            messages: [{ messageId: 'assistant-1', role: 'assistant', content: 'A and B arrived.' }] })
+        expect(saveConfirmedTurn).toHaveBeenCalledOnce()
+        expect(result.canonicalReceipt?.eventIds).toEqual(['event.arrival'])
+        expect(result.canonicalReceipt?.changes.map(change => change.documentId)).toEqual(['character.A'])
+        expect(result.canonicalReceipt?.warnings).toContain('정본 문서 저장 실패: B')
+        expect(canonicalTurnNeedsRetry(result.canonicalReceipt!)).toBe(true)
+    })
+
     test.each([false, true])('keeps English through analysis, rewrite and saves (reboot=%s)', async (reboot) => {
         const systems: string[] = []
         const saveConfirmedTurn = vi.fn(async (input) => input)

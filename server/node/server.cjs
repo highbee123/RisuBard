@@ -1,3 +1,5 @@
+// Consent must precede every storage constructor and startup migration.
+function startApplication() {
 const express = require('express');
 const app = express();
 const http = require('http');
@@ -23,8 +25,8 @@ const getVips = () => {
     }
     return _vipsPromise
 }
-const { kvGet, kvSet, kvSetMany, kvSetManyAsync, kvReplacePrefixesAsync, kvReplacePrefixesFromFilesAsync, kvReplaceAllAsync, kvDel, kvDelMany, kvList,
-        kvDelPrefix, kvListWithSizes, kvSize, kvGetUpdatedAt, kvCopyValue,
+const { kvGet, kvSet, kvSetMany, kvSetManyAsync, kvReplacePrefixesAsync, kvPublishImportAsync, kvDetachOwnedAssets, kvDel, kvDelMany, kvList,
+        kvDelPrefix, kvListWithSizes, kvListRecoveryObjects, kvSize, kvGetUpdatedAt, kvCopyValue,
         gcChunks, reclaimableChunkBytes, objectStoreBytes, isDbBlobChunked, snapshotFootprint, repository: userDataRepository } = require('./db.cjs');
 const {
     addLogBatch, queryLogs, clearLogs, countLogs,
@@ -32,13 +34,15 @@ const {
 } = require('./logs.cjs');
 const { createRequestLogs } = require('./request-logs.cjs');
 const { resolveDataRoot } = require('./data-root.cjs');
-const { commitTransaction, moveToTrash } = require('./file-store.cjs');
 const { createRuntimeMemoryService } = require('./risubard-memory-runtime.cjs');
 const { openServerBrowser } = require('./open-server-browser.cjs');
 const { releaseToUpdateInfo } = require('./release-update.cjs');
 const { createChatContentPage } = require('./chat-content-page.cjs');
 const { stageBackupEntries } = require('./backup-entry-stream.cjs');
 const { createCanonicalProjectionSync } = require('./canonical-projection-sync.cjs');
+const { ENTITY_ROOTS, decodeImportDatabase, assignImportIds, stageCanonicalDatabase, collectImportFiles } = require('./canonical-import.cjs');
+const { createUserDataRepository } = require('./user-data-repository.cjs');
+const { createV2ItemImportService } = require('./v2-item-import.cjs');
 const {
     collectDatabaseAssetReferences,
     collectNestedAssetReferences,
@@ -91,7 +95,8 @@ function computeDatabaseEtagFromObject(databaseObject) {
 
 let storageOperationQueue = Promise.resolve();
 function queueStorageOperation(operation) {
-    const operationRun = storageOperationQueue.then(operation, operation);
+    const run = () => { assertStorageReady(); return operation(); };
+    const operationRun = storageOperationQueue.then(run, run);
     storageOperationQueue = operationRun.catch(() => {});
     return operationRun;
 }
@@ -234,6 +239,8 @@ function maybeCollectUnreferencedObjects() {
 }
 
 async function flushPendingDb() {
+    assertStorageReady();
+    if (isNativeDocumentRuntime() && !saveTimers[DB_HEX_KEY]) return;
     if (adoptExternallyChangedCanonicalProjection()) return;
     if (saveTimers[DB_HEX_KEY]) {
         clearTimeout(saveTimers[DB_HEX_KEY]);
@@ -246,7 +253,6 @@ async function flushPendingDb() {
             if (raw) {
                 const dbObj = normalizeJSON(await decodeRisuSave(raw));
                 const fullDb = reassembleFullDb(stripChatsFromDb(dbObj));
-                kvSet('database/database.bin', Buffer.from(encodeRisuSaveLegacy(fullDb)));
                 persistCanonicalProjection(fullDb);
             }
         }
@@ -314,7 +320,7 @@ async function decodeDatabaseWithPersistentChatIds(raw, options = {}) {
         const fresh = kvGet('database/database.bin');
         if (fresh) raw = fresh;
     }
-    const dbObj = normalizeJSON(await decodeRisuSave(raw));
+    let dbObj = normalizeJSON(await decodeRisuSave(raw));
     let needsPersist = false;
 
     const hadMissingIds = assignMissingChatIds(dbObj);
@@ -337,15 +343,14 @@ async function decodeDatabaseWithPersistentChatIds(raw, options = {}) {
     }
 
     if (needsPersist) {
-        kvSet('database/database.bin', Buffer.from(encodeRisuSaveLegacy(dbObj)));
-        persistCanonicalProjection(dbObj);
+        dbObj = persistCanonicalProjection(dbObj).database ?? dbObj;
         if (runMaintenance) maybeCollectUnreferencedObjects();
     }
     if (migrationResult) {
         migrationResult.coldStorageFailed = coldRestoreResult.failed;
     }
     if (!canonicalProjectionReady) {
-        persistCanonicalProjection(dbObj);
+        dbObj = persistCanonicalProjection(dbObj).database ?? dbObj;
     }
     return dbObj;
 }
@@ -700,7 +705,7 @@ async function persistDbCacheWithChats(filePath, decodedKey) {
     const strippedDb = dbCache[filePath];
     if (!strippedDb) return;
     await ensureChatStore();
-    const fullDb = reassembleFullDb(strippedDb);
+    let fullDb = reassembleFullDb(strippedDb);
 
     // Disk protection guard: abort persist when reassemble produced metadata-only
     // chats. Writing them would lock the loss in (next /api/read returns the
@@ -723,8 +728,8 @@ async function persistDbCacheWithChats(filePath, decodedKey) {
 
     const data = Buffer.from(encodeRisuSaveLegacy(fullDb));
     try {
-        kvSet(decodedKey, data);
-        if (decodedKey === 'database/database.bin') persistCanonicalProjection(fullDb);
+        if (decodedKey === 'database/database.bin') fullDb = persistCanonicalProjection(fullDb).database ?? fullDb;
+        else kvSet(decodedKey, data);
     } catch (err) {
         // Tag with BLOB size so the visibility layer can surface it to the user.
         // Oversized compatibility blobs are rejected before allocating copies.
@@ -798,6 +803,7 @@ app.use((req, res, next) => {
 });
 app.use(express.text({ limit: '100mb' }));
 const {pipeline} = require('stream/promises')
+const { decodeAssetBulkWrite } = require('./asset-bulk-protocol.cjs');
 const sslPath = path.join(process.cwd(), 'server/node/ssl/certificate');
 const hubURL = 'https://sv.risuai.xyz';
 
@@ -808,27 +814,81 @@ const savePath = resolveDataRoot()
 if(!existsSync(savePath)){
     mkdirSync(savePath)
 }
+function isNativeDocumentRuntime() {
+    return existsSync(path.join(savePath, 'settings/native-runtime.json'));
+}
+let nativeDocumentStore;
+function getNativeDocumentStore() {
+    return nativeDocumentStore ||= require('./native-document-store.cjs').createNativeDocumentStore({ dataRoot: savePath });
+}
+async function ensureNativeDocumentRuntime() {
+    // A mixed-version client may have an acknowledged, debounced legacy save.
+    // Finish that explicit compatibility operation before any native access.
+    if (saveTimers[DB_HEX_KEY]) await flushPendingDb();
+    if (isNativeDocumentRuntime()) return;
+    // This is a one-time legacy import boundary, not an ordinary native save.
+    if (!existsSync(path.join(savePath, 'settings/layout.json'))) {
+        await migrateRemoteBlocksIfNeeded();
+        const raw = kvGet('database/database.bin');
+        const database = raw ? await decodeDatabaseWithPersistentChatIds(raw, { runMaintenance: true })
+            : { characters: [], modules: [], personas: [], botPresets: [], loreBook: [] };
+        userDataRepository.importLegacyDatabase(database, { mode: 'sync', strictAssets: true });
+    }
+    require('./file-store.cjs').atomicWriteJson(savePath, 'settings/native-runtime.json', { schemaVersion: 1, mode: 'native-documents' });
+    kvDel('database/database.bin');
+    kvDel(CANONICAL_PROJECTION_REVISION_KEY);
+    delete dbCache[DB_HEX_KEY];
+    fullChatStore = null;
+    dbEtag = null;
+}
 const CANONICAL_PROJECTION_REVISION_KEY = 'database/canonical-projection-revision'
+let nativeCompatibilityRevision = null;
 const canonicalProjectionSync = createCanonicalProjectionSync({
     repository: userDataRepository,
     readAcceptedRevision: () => {
+        if (isNativeDocumentRuntime()) return nativeCompatibilityRevision;
         const value = kvGet(CANONICAL_PROJECTION_REVISION_KEY)
         return value ? Buffer.from(value).toString('utf8').trim() || null : null
     },
     writeAcceptedRevision: revision => {
+        if (isNativeDocumentRuntime()) { nativeCompatibilityRevision = revision; return; }
         kvSet(CANONICAL_PROJECTION_REVISION_KEY, Buffer.from(`${revision}\n`, 'utf8'))
     },
 })
 let canonicalProjectionReady = existsSync(path.join(savePath, 'index', 'sidebar.json'))
 function persistCanonicalProjection(databaseObject) {
+    assertStorageReady();
     if (canonicalProjectionSync.hasExternalChanges()) {
         const error = new Error('Canonical entity files changed outside RisuBard before projection save')
         error.code = 'CANONICAL_FILES_CHANGED'
         throw error
     }
-    const result = userDataRepository.importLegacyDatabase(databaseObject, { mode: 'sync' })
-    canonicalProjectionSync.accept()
+    require('./user-data-repository.cjs').validateImport(databaseObject, 'sync', userDataRepository.loadSidebarIndex())
+    assignImportIds(databaseObject)
+    const result = userDataRepository.importLegacyDatabase(databaseObject, { mode: 'sync', strictAssets: true })
+    try {
+        kvDetachOwnedAssets({ consumedAssetKeys: result.consumedAssetKeys || [] })
+    } catch (error) {
+        const journal = path.join(savePath, '.journal')
+        if (existsSync(journal) && readdirSync(journal).some(name => name.endsWith('.json'))) importRecoveryRequired = true
+        throw error
+    }
     canonicalProjectionReady = true
+    // Publish the derived cache only after canonical validation and commit succeed.
+    // Leave the revision unaccepted on cache failure so the next read rebuilds it.
+    const canonical = result.database ?? databaseObject
+    if (!isNativeDocumentRuntime()) kvSet('database/database.bin', Buffer.from(encodeRisuSaveLegacy(canonical)))
+    result.canonicalReferencesChanged = !require('util').isDeepStrictEqual(canonical, databaseObject)
+    if (result.canonicalReferencesChanged) {
+        initChatStore(canonical)
+        const stripped = normalizeJSON(stripChatsFromDb(canonical))
+        dbCache[DB_HEX_KEY] = stripped
+        dbEtag = computeDatabaseEtagFromObject(stripped)
+        // A pending client patch still uses its old references. Reuse the
+        // canonical reload path on its next mismatch instead of rebasing them.
+        externallyAdoptedDbEtag = dbEtag
+    }
+    canonicalProjectionSync.accept()
     return result
 }
 
@@ -843,7 +903,7 @@ function adoptExternallyChangedCanonicalProjection() {
     }
     const fullDb = normalizeJSON(changed.database)
     const encoded = Buffer.from(encodeRisuSaveLegacy(fullDb))
-    kvSet('database/database.bin', encoded)
+    if (!isNativeDocumentRuntime()) kvSet('database/database.bin', encoded)
     initChatStore(fullDb)
     const stripped = normalizeJSON(stripChatsFromDb(fullDb))
     dbCache[DB_HEX_KEY] = stripped
@@ -949,6 +1009,31 @@ const BACKUP_NDJSON_HEARTBEAT_MS = Math.max(
 );
 
 let importInProgress = false;
+let importRecoveryRequired = false;
+function storageRecoveryRequired() {
+    if (importRecoveryRequired) return true;
+    try {
+        importRecoveryRequired = readdirSync(path.join(savePath, '.journal')).some(name => name.endsWith('.json'));
+    } catch (error) {
+        if (error.code !== 'ENOENT') importRecoveryRequired = true;
+    }
+    return importRecoveryRequired;
+}
+function assertStorageReady() {
+    if (!storageRecoveryRequired()) return;
+    const error = new Error('Storage publication was interrupted. Restart to recover before using this save.');
+    error.status = 503;
+    error.code = 'STORAGE_RECOVERY_REQUIRED';
+    throw error;
+}
+app.use('/api', (req, res, next) => {
+    if (storageRecoveryRequired() || importInProgress) {
+        return res.status(503).json({ error: importRecoveryRequired
+            ? 'Storage publication was interrupted. Restart to recover before using this save.'
+            : 'Save import is in progress; retry after completion.' });
+    }
+    next();
+});
 
 // ── Cloudflare Quick Tunnel ─────────────────────────────────────────────────
 const TUNNEL_DISABLED = process.env.RISU_TUNNEL_DISABLED === 'true';
@@ -1076,6 +1161,7 @@ const deploymentType = (() => {
     } catch {}
     return 'unknown';
 })();
+
 
 function getSelfUpdateAssetInfo(version) {
     const platformMap = { win32: 'win', linux: 'linux', darwin: 'macos' };
@@ -2000,8 +2086,8 @@ function encodeBackupEntry(name, data) {
 
 const CANONICAL_BACKUP_PREFIX = 'risubard-data/';
 const CANONICAL_BACKUP_DIRECTORIES = [
-    'settings', 'secrets', 'presets', 'modules', 'personas', 'lorebooks',
-    'characters', 'index', 'risubard', 'trash', 'logs', 'request-logs',
+    'settings', 'secrets', 'presets', 'prompts', 'modules', 'personas', 'lorebooks',
+    'characters', 'shared', 'index', 'risubard', 'trash', 'logs', 'request-logs',
     'model-jobs',
 ];
 
@@ -2031,6 +2117,10 @@ async function listCanonicalBackupEntries() {
         }
     }
     for (const directory of CANONICAL_BACKUP_DIRECTORIES) await walk(directory);
+    for (const entry of kvListRecoveryObjects()) {
+        const backupName = `${CANONICAL_BACKUP_PREFIX}trash/import-objects/${entry.object}`;
+        entries.push({ kind: 'canonical', sourcePath: entry.sourcePath, backupName, sortKey: backupName, size: entry.size });
+    }
     return entries.sort((left, right) => left.sortKey.localeCompare(right.sortKey));
 }
 
@@ -2275,16 +2365,138 @@ async function decryptAccountBackupDatabase(databasePath, metadataPath) {
     }
 }
 
-async function validateStagedBackupDatabase(databasePath) {
-    const database = await decodeRisuSave(await fs.readFile(databasePath));
-    if (!database || typeof database !== 'object' || Array.isArray(database)) {
-        throw new Error('Backup database is invalid');
+async function publishImportedSnapshot(database, stagedKvEntries, canonicalStagingDir, options = {}) {
+    const nativeImport = isNativeDocumentRuntime();
+    assignMissingChatIds(database);
+    normalizeOrphanFolderIds(database);
+    const normalizedRoot = await fs.mkdtemp(path.join(savePath, '.normalized-import-'));
+    try {
+    const incomingFiles = collectImportFiles(canonicalStagingDir);
+    const portablePath = value => value.split(path.sep).join('/');
+    const isCoreFile = operation => ENTITY_ROOTS.includes(portablePath(operation.path).split('/')[0]);
+    // Seed the incoming core so migration can move drafts and extra files with
+    // their owners. The source tree remains intact throughout validation.
+    await Promise.all(ENTITY_ROOTS.filter(directory => existsSync(path.join(canonicalStagingDir, directory))).map(directory =>
+        fs.cp(path.join(canonicalStagingDir, directory), path.join(normalizedRoot, directory), { recursive: true })));
+    const { readOwnedAssetIndex, getOwnedAssetSource } = require('./owned-assets.cjs');
+    const incomingAssetIndex = readOwnedAssetIndex(canonicalStagingDir);
+    const incomingKv = new Map(stagedKvEntries.map(entry => [entry.key, entry]));
+    const allAssetKeys = [...new Set([
+        ...stagedKvEntries.filter(entry => entry.key.startsWith('assets/')).map(entry => entry.key),
+        ...Object.keys(incomingAssetIndex.entries),
+    ])];
+    let consumedAssetKeys = [];
+    const canonicalDatabase = stageCanonicalDatabase(normalizedRoot, database, {
+        assetSourceRoot: savePath, allAssetKeys, strictAssets: true,
+        onAssetNormalization: result => { consumedAssetKeys = result.consumedAssetKeys; },
+        onProgress: event => options.onPublishProgress?.({ ...event, stage: 'converting' }),
+        onPhase: phase => options.onPhase?.(phase),
+        readAsset: key => {
+            const owned = getOwnedAssetSource(canonicalStagingDir, key, incomingAssetIndex);
+            if (owned) return { sourcePath: owned };
+            const entry = incomingKv.get(key);
+            return entry ? (entry.sourcePath ? { sourcePath: entry.sourcePath } : entry.value) : null;
+        },
+    });
+    // Keep supplied prior revisions when their active parent survives conversion;
+    // old ID folders are never recreated just to restore a sidecar.
+    for (const operation of incomingFiles) {
+        if (!isCoreFile(operation) || !operation.path.endsWith('.bak')) continue;
+        const destination = path.join(normalizedRoot, operation.path);
+        if (existsSync(path.dirname(destination))) await fs.copyFile(operation.sourcePath, destination);
+    }
+    const databaseEntry = stagedKvEntries.find(entry => entry.key === 'database/database.bin');
+    if (!databaseEntry) throw new Error('Import is missing the database entry');
+    const encoded = Buffer.from(encodeRisuSaveLegacy(canonicalDatabase));
+    if (databaseEntry.sourcePath) await fs.writeFile(databaseEntry.sourcePath, encoded);
+    else databaseEntry.value = encoded;
+
+    const importId = `import-${nodeCrypto.randomUUID()}`;
+    const operations = [];
+    const ownedAssetKeys = Object.keys(readOwnedAssetIndex(normalizedRoot).entries);
+    const archivedAssetKeys = Object.create(null);
+    for (const key of consumedAssetKeys) {
+        const entry = incomingKv.get(key);
+        if (!entry) continue;
+        const archivePath = `trash/${importId}/incoming-assets/${nodeCrypto.createHash('sha256').update(key).digest('hex')}`;
+        archivedAssetKeys[key] = archivePath;
+        operations.push(entry.sourcePath ? { path: archivePath, sourcePath: entry.sourcePath } : { path: archivePath, data: Buffer.from(entry.value) });
+    }
+    if (Object.keys(archivedAssetKeys).length) operations.push({ path: `trash/${importId}/incoming-assets/keys.json`, data: Buffer.from(JSON.stringify(archivedAssetKeys, null, 2)) });
+    const directories = new Set([...ENTITY_ROOTS, ...(options.extraRoots || [])]);
+    for (const directory of directories) {
+        if (directory !== 'trash' && existsSync(path.join(savePath, directory))) {
+            operations.push({ path: directory, archiveTo: path.join('trash', importId, directory) });
+        }
+    }
+    const recoveryObjects = new Map();
+    for (const operation of incomingFiles) {
+        const portable = operation.path.split(path.sep).join('/');
+        if (!portable.startsWith('trash/import-objects/')) continue;
+        const hash = portable.slice('trash/import-objects/'.length);
+        if (!/^[a-f0-9]{64}$/.test(hash)
+            || require('./file-store.cjs').checksumFile(operation.sourcePath) !== hash) {
+            throw new Error('Invalid archived recovery object');
+        }
+        recoveryObjects.set(hash, operation.sourcePath);
+        operation.path = path.join('kv/objects', hash);
+    }
+    for (const operation of incomingFiles) {
+        if (!/^trash\/import-[^/]+\/kv-manifest\.json$/.test(operation.path.split(path.sep).join('/'))) continue;
+        const manifest = JSON.parse(readFileSync(operation.sourcePath, 'utf8'));
+        if (manifest.schemaVersion !== 1 || !manifest.entries) throw new Error('Invalid archived manifest');
+        for (const entry of Object.values(manifest.entries)) {
+            if (!recoveryObjects.has(entry.object)) throw new Error('Backup is missing archived recovery objects');
+        }
+    }
+    const files = new Map();
+    for (const operation of incomingFiles) {
+        const destination = isCoreFile(operation) ? path.join('trash', importId, 'incoming-original', operation.path) : operation.path;
+        files.set(portablePath(destination), { ...operation, path: destination });
+    }
+    for (const operation of collectImportFiles(normalizedRoot)) files.set(portablePath(operation.path), operation);
+    if (nativeImport) files.set('settings/native-runtime.json', {
+        path: 'settings/native-runtime.json',
+        data: Buffer.from(JSON.stringify({ schemaVersion: 1, mode: 'native-documents' })),
+    });
+    operations.push(...files.values());
+    if (options.inlayStagingDir) {
+        for (const operation of collectImportFiles(options.inlayStagingDir)) {
+            operations.push({ ...operation, path: path.join('inlays', operation.path) });
+        }
+    }
+    // No asynchronous request may publish a pending save between validation and
+    // the manifest switch. Existing queued writers finish before this operation.
+    await queueStorageOperation(async () => {
+        await flushPendingDb();
+        try {
+            await kvPublishImportAsync(nativeImport
+                ? stagedKvEntries.filter(entry => entry.key !== 'database/database.bin') : stagedKvEntries,
+                { importId, operations, prefixes: options.prefixes, ownedAssetKeys, archivedAssetKeys,
+                    transactionOptions: {
+                        onProgress: event => options.onPublishProgress?.({ ...event, stage: 'publishing' }),
+                    },
+                });
+            invalidateDbCache();
+            canonicalProjectionReady = true;
+            canonicalProjectionSync.accept();
+            if (!nativeImport) initChatStore(canonicalDatabase);
+        } catch (error) {
+            // A prepared journal may already contain some new files. Never let
+            // subsequent writes overwrite it; startup replays it before loading KV.
+            importRecoveryRequired = true;
+            throw error;
+        }
+    });
+    return { importId };
+    } finally {
+        await fs.rm(normalizedRoot, { recursive: true, force: true });
     }
 }
 
 // ─── Shared backup import logic ─────────────────────────────────────────────
 // Accepts any async iterable of Buffer chunks (HTTP request body, file stream, etc.)
-async function importBackupFromSource(dataSource, { maxBytes = 0, totalBytes = 0, onProgress = null, onPhase = null } = {}) {
+async function importBackupFromSource(dataSource, { maxBytes = 0, totalBytes = 0, onProgress = null, onPhase = null, onPublishProgress = null } = {}) {
     let hasDatabase = false;
     let databaseEntryPath = null;
     let encryptionMetadataPath = null;
@@ -2292,6 +2504,7 @@ async function importBackupFromSource(dataSource, { maxBytes = 0, totalBytes = 0
     let bytesReceived = 0;
     const stagedKvEntries = [];
     const seenEntryNames = new Set();
+    const seenStorageKeys = new Set();
     const importedInlayIds = new Set();
     const importedSidecarIds = new Set();
     const explicitSidecarMap = new Map();
@@ -2344,9 +2557,6 @@ async function importBackupFromSource(dataSource, { maxBytes = 0, totalBytes = 0
         writeFileSync(stagingSidecarPath(id), JSON.stringify(sidecar));
     }
 
-    await flushPendingDb();
-    maybeCollectUnreferencedObjects();
-
     try {
         const staged = await stageBackupEntries(dataSource, {
             stagingDir: entryStagingDir,
@@ -2355,10 +2565,10 @@ async function importBackupFromSource(dataSource, { maxBytes = 0, totalBytes = 0
             maxNameBytes: BACKUP_ENTRY_NAME_MAX_BYTES,
             onProgress,
             onEntry: async ({ name, sourcePath }) => {
-                if (seenEntryNames.has(name)) {
+                if (seenEntryNames.has(name.toLowerCase())) {
                     throw new Error(`Duplicate backup entry: ${name}`);
                 }
-                seenEntryNames.add(name);
+                seenEntryNames.add(name.toLowerCase());
 
                 const inlayRaw = parseInlayBackupName(name);
                 const inlaySidecar = parseInlaySidecarBackupName(name);
@@ -2368,7 +2578,9 @@ async function importBackupFromSource(dataSource, { maxBytes = 0, totalBytes = 0
                 } else if (name.startsWith(CANONICAL_BACKUP_PREFIX)) {
                     const portable = name.slice(CANONICAL_BACKUP_PREFIX.length);
                     if (!portable || portable.includes('\\') || portable.startsWith('/')
-                        || portable.split('/').some(segment => !segment || segment === '.' || segment === '..')) {
+                        || portable.split('/').some(segment => !segment || segment === '.' || segment === '..'
+                            || /[:<>"|?*]/.test(segment) || /[. ]$/.test(segment))
+                        || !CANONICAL_BACKUP_DIRECTORIES.includes(portable.split('/')[0])) {
                         throw new Error(`Invalid canonical backup entry name: ${name}`);
                     }
                     const target = path.resolve(canonicalStagingDir, ...portable.split('/'));
@@ -2447,6 +2659,8 @@ async function importBackupFromSource(dataSource, { maxBytes = 0, totalBytes = 0
                     await fs.rm(sourcePath, { force: true });
                 } else {
                     const storageKey = resolveBackupStorageKey(name);
+                    if (seenStorageKeys.has(storageKey)) throw new Error('Duplicate backup storage key');
+                    seenStorageKeys.add(storageKey);
                     if (storageKey.startsWith('coldstorage/')) {
                         const data = await fs.readFile(sourcePath);
                         const storageValue = encodeColdStorageCanonicalBuffer(
@@ -2474,38 +2688,38 @@ async function importBackupFromSource(dataSource, { maxBytes = 0, totalBytes = 0
         if (encryptionMetadataPath) {
             await decryptAccountBackupDatabase(databaseEntryPath, encryptionMetadataPath);
         }
-        await validateStagedBackupDatabase(databaseEntryPath);
+        const incomingEntries = new Map(stagedKvEntries.map(entry => [entry.key, entry.sourcePath]));
+        const database = await decodeImportDatabase(await fs.readFile(databaseEntryPath), async key => {
+            const source = incomingEntries.get(key);
+            return source ? fs.readFile(source) : null;
+        });
+        if (canonicalEntriesRestored > 0 && ENTITY_ROOTS.some(directory => existsSync(path.join(canonicalStagingDir, directory)))) {
+            if (!existsSync(path.join(canonicalStagingDir, 'settings/app.json'))) throw new Error('Incomplete canonical backup settings');
+            const native = createUserDataRepository({ dataRoot: canonicalStagingDir }).exportLegacyDatabase();
+            // A native backup carries two representations. Reject disagreement
+            // rather than choosing one and silently discarding the other.
+            for (const field of ['botPresets', 'modules', 'personas', 'loreBook']) {
+                for (let i = 0; i < (database[field]?.length || 0); i++) {
+                    database[field][i].id ||= native[field]?.[i]?.id;
+                }
+            }
+            assignImportIds(database);
+            if (!require('util').isDeepStrictEqual(native, database)) throw new Error('Canonical backup and database disagree');
+        }
         for (const [id, info] of legacyInlayInfoMap.entries()) {
             if (importedInlayIds.has(id) && !importedSidecarIds.has(id)) {
                 writeStagingSidecarSync(id, info);
             }
         }
         if (onPhase) onPhase('publishing');
-        await kvReplacePrefixesFromFilesAsync(stagedKvEntries, [
+        await publishImportedSnapshot(database, stagedKvEntries, canonicalStagingDir, { prefixes: [
             'assets/', 'inlay/', 'inlay_thumb/', 'inlay_meta/', 'inlay_info/',
             'coldstorage/', 'drafts/', 'remotes/', REMOTE_MIGRATION_MARKER_KEY,
-        ]);
-        if (canonicalEntriesRestored > 0) {
-            const operations = [];
-            async function collect(relativeDirectory = '') {
-                const absolute = path.join(canonicalStagingDir, relativeDirectory);
-                for (const entry of await fs.readdir(absolute, { withFileTypes: true })) {
-                    const relativePath = path.join(relativeDirectory, entry.name);
-                    if (entry.isDirectory()) await collect(relativePath);
-                    else if (entry.isFile()) operations.push({
-                        path: relativePath,
-                        sourcePath: path.join(canonicalStagingDir, relativePath),
-                    });
-                }
-            }
-            await collect();
-            for (const directory of CANONICAL_BACKUP_DIRECTORIES) {
-                if (directory === 'trash') continue;
-                const current = path.join(savePath, directory);
-                if (existsSync(current)) moveToTrash(savePath, directory);
-            }
-            commitTransaction(savePath, operations);
-        }
+        ], onPhase, onPublishProgress, inlayStagingDir: stagingDir,
+            extraRoots: ['inlays', ...CANONICAL_BACKUP_DIRECTORIES.filter(directory =>
+                !['trash', 'logs', 'request-logs', 'model-jobs'].includes(directory)
+                && existsSync(path.join(canonicalStagingDir, directory)))],
+        });
     } catch (error) {
         await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
         await fs.rm(backupInlayDir, { recursive: true, force: true }).catch(() => {});
@@ -2515,43 +2729,11 @@ async function importBackupFromSource(dataSource, { maxBytes = 0, totalBytes = 0
     }
     await fs.rm(canonicalStagingDir, { recursive: true, force: true }).catch(() => {});
     await fs.rm(entryStagingDir, { recursive: true, force: true }).catch(() => {});
-
     if (onPhase) onPhase('finalizing');
     await ensureInlayDir();
-    try {
-        if (existsSync(inlayDir)) {
-            await fs.rename(inlayDir, backupInlayDir);
-        }
-        await fs.rename(stagingDir, inlayDir);
-        await fs.writeFile(inlayMigrationMarker, new Date().toISOString(), 'utf-8');
-        await fs.rm(backupInlayDir, { recursive: true, force: true }).catch(() => {});
-    } catch (swapError) {
-        if (existsSync(backupInlayDir)) {
-            await fs.rm(inlayDir, { recursive: true, force: true }).catch(() => {});
-            await fs.rename(backupInlayDir, inlayDir).catch(() => {});
-        }
-        await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
-        throw swapError;
-    }
-
-    invalidateDbCache();
-    if (canonicalEntriesRestored > 0) {
-        canonicalProjectionSync.accept();
-        canonicalProjectionReady = true;
-    }
-
-    // Trigger cold storage migration now so import result includes failure count.
-    const dbRaw = kvGet('database/database.bin');
-    let coldStorageFailed = 0;
-    if (dbRaw) {
-        const migration = {};
-        const dbObj = await decodeDatabaseWithPersistentChatIds(dbRaw, {
-            runMaintenance: false,
-            migrationResult: migration,
-        });
-        coldStorageFailed = migration.coldStorageFailed || 0;
-        initChatStore(dbObj);
-    }
+    await fs.writeFile(inlayMigrationMarker, new Date().toISOString(), 'utf-8');
+    await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
+    const coldStorageFailed = 0; // Incomplete cold data is rejected before publication.
 
     console.log(`[Backup Import] Complete: ${assetsRestored} assets restored, ${(bytesReceived / 1024 / 1024).toFixed(1)}MB processed`);
     if (coldStorageFailed > 0) {
@@ -3247,11 +3429,11 @@ app.get('/api/asset/:hexKey', sessionAuthMiddleware, async (req, res) => {
             if (file) {
                 const etag = `"${Math.floor(file.mtimeMs)}"`
                 if (req.headers['if-none-match'] === etag) {
-                    return res.status(304).set('Cache-Control', 'public, max-age=31536000, immutable').end()
+                    return res.status(304).set('Cache-Control', 'no-cache').end()
                 }
                 res.set({
                     'Content-Type': file.mime,
-                    'Cache-Control': 'public, max-age=31536000, immutable',
+                    'Cache-Control': 'no-cache',
                     'ETag': etag,
                 })
                 return res.send(file.buffer)
@@ -3269,12 +3451,12 @@ app.get('/api/asset/:hexKey', sessionAuthMiddleware, async (req, res) => {
             if (!file) return res.status(404).set('Cache-Control', 'no-store').end()
             const etag = `"thumb-${Math.floor(file.mtimeMs)}"`
             if (req.headers['if-none-match'] === etag) {
-                return res.status(304).set('Cache-Control', 'public, max-age=31536000, immutable').end()
+                return res.status(304).set('Cache-Control', 'no-cache').end()
             }
             const thumb = await generateThumbnail(file.buffer)
             res.set({
                 'Content-Type': 'image/webp',
-                'Cache-Control': 'public, max-age=31536000, immutable',
+                'Cache-Control': 'no-cache',
                 'ETag': etag,
             })
             return res.send(thumb)
@@ -3286,7 +3468,7 @@ app.get('/api/asset/:hexKey', sessionAuthMiddleware, async (req, res) => {
 
         const etag = `"${updatedAt}"`
         if (req.headers['if-none-match'] === etag) {
-            return res.status(304).set('Cache-Control', 'public, max-age=31536000, immutable').end()
+            return res.status(304).set('Cache-Control', 'no-cache').end()
         }
 
         const data = kvGet(key)
@@ -3295,7 +3477,7 @@ app.get('/api/asset/:hexKey', sessionAuthMiddleware, async (req, res) => {
         const { binary, contentType } = resolveAssetPayload(key, data)
         res.set({
             'Content-Type': contentType,
-            'Cache-Control': 'public, max-age=31536000, immutable',
+            'Cache-Control': 'no-cache',
             'ETag': etag,
         })
         res.send(binary)
@@ -3463,6 +3645,9 @@ app.get('/api/read', async (req, res, next) => {
         // Flush pending patches before reading database.bin
         if (key === 'database/database.bin') {
             await flushPendingDb();
+            // Only explicit legacy reads establish the whole-state compatibility
+            // baseline. Native reads never invoke this global projection check.
+            if (isNativeDocumentRuntime()) adoptExternallyChangedCanonicalProjection();
         }
         let value = await readStorageItemPayload(key);
         if(value === null){
@@ -3659,6 +3844,18 @@ registerRisuBardMemoryRoutes(app, {
     auth: checkAuth,
     service: narrativeMemoryService,
 });
+require('./native-document-routes.cjs').registerNativeDocumentRoutes(app, {
+    getStore: getNativeDocumentStore, auth: checkAuth, activeSession: checkActiveSession,
+    queue: queueStorageOperation, ensureReady: ensureNativeDocumentRuntime,
+    readSummaries: (catalog, targets) => require('./native-document-summaries.cjs').readNativeSummaries({ dataRoot: savePath, catalog, targets }),
+    onCommit: () => {
+        delete dbCache[DB_HEX_KEY];
+        fullChatStore = null;
+        dbEtag = null;
+        externallyAdoptedDbEtag = null;
+        nativeCompatibilityRevision = null;
+    },
+});
 
 app.post('/api/write', async (req, res, next) => {
     if(!await checkAuth(req, res)){
@@ -3679,6 +3876,7 @@ app.post('/api/write', async (req, res, next) => {
         await queueStorageOperation(async () => {
             const key = Buffer.from(filePath, 'hex').toString('utf-8');
 
+            let canonicalReferencesChanged = false;
             if (key === 'database/database.bin') {
                 const adopted = adoptExternallyChangedCanonicalProjection();
                 if (adopted) {
@@ -3761,10 +3959,10 @@ app.post('/api/write', async (req, res, next) => {
                     }
 
                     const mergedContent = Buffer.from(encodeRisuSaveLegacy(fullDb));
-                    // Re-init chat store from merged result
-                    initChatStore(fullDb);
-                    kvSet(key, mergedContent);
-                    persistCanonicalProjection(fullDb);
+                    const saved = persistCanonicalProjection(fullDb, mergedContent);
+                    canonicalReferencesChanged = saved.canonicalReferencesChanged;
+                    // Publish memory only after the same snapshot is durable.
+                    initChatStore(saved.database ?? fullDb);
                 } catch (e) {
                     logger.error('[Write] Failed to merge chats into database.bin:', e.message);
                     // Do NOT write stubs-only to disk — that would permanently
@@ -3784,7 +3982,7 @@ app.post('/api/write', async (req, res, next) => {
                     delete saveTimers[DB_HEX_KEY];
                 }
                 // ETag based on stripped version (what client sees)
-                dbEtag = computeBufferEtag(fileContent);
+                if (!canonicalReferencesChanged) dbEtag = computeBufferEtag(fileContent);
                 maybeCollectUnreferencedObjects();
             }
 
@@ -3795,7 +3993,7 @@ app.post('/api/write', async (req, res, next) => {
                     ? computeBufferEtag(Buffer.from(storedValue))
                     : null;
             }
-            res.send({ success: true, etag: nextEtag ?? undefined });
+            res.send({ success: true, etag: nextEtag ?? undefined, ...(canonicalReferencesChanged ? { canonicalReferencesChanged: true } : {}) });
         });
     } catch (error) {
         next(error);
@@ -3943,6 +4141,21 @@ app.post('/api/patch', async (req, res, next) => {
             if (saveTimers[filePath]) {
                 clearTimeout(saveTimers[filePath]);
             }
+            if (decodedKey === 'database/database.bin' && (/assets(?:\/|\\\\)/.test(JSON.stringify(patch)) || patch.some(operation => ['copy', 'move'].includes(operation.op)))) {
+                await ensureChatStore();
+                const fullSnapshot = reassembleFullDb(snapshot);
+                const normalized = require('./owner-asset-references.cjs').normalizeOwnerAssetReferences(fullSnapshot, {
+                    previousIndex: require('./owned-assets.cjs').readOwnedAssetIndex(savePath),
+                }).database;
+                if (!require('util').isDeepStrictEqual(normalized, fullSnapshot)) {
+                    delete saveTimers[filePath];
+                    try { await persistDbCacheWithChats(filePath, decodedKey); }
+                    catch (error) { delete dbCache[filePath]; throw error; }
+                    clearPersistFailure();
+                    res.send({ success: true, appliedOperations: result.length, etag: dbEtag, canonicalReferencesChanged: true });
+                    return;
+                }
+            }
             saveTimers[filePath] = setTimeout(async () => {
                 try {
                     if (decodedKey === 'database/database.bin') {
@@ -4076,7 +4289,12 @@ app.post('/api/assets/bulk-write', async (req, res, next) => {
     if(!await checkAuth(req, res)){ return; }
     if (!checkActiveSession(req, res)) return;
     try {
-        const entries = req.body; // {key: string, value: base64}[]
+        let entries;
+        if ((req.headers['content-type'] || '').includes('application/octet-stream')) {
+            entries = decodeAssetBulkWrite(req.body, { maxEntries: BULK_WRITE_BATCH });
+        } else {
+            entries = req.body; // Legacy {key: string, value: base64}[] clients
+        }
         if(!Array.isArray(entries)){
             res.status(400).send({ error: 'Body must be a JSON array of {key, value}' });
             return;
@@ -4085,7 +4303,7 @@ app.post('/api/assets/bulk-write', async (req, res, next) => {
             const batch = entries.slice(i, i + BULK_WRITE_BATCH);
             await kvSetManyAsync(batch.map(({ key, value }) => ({
                 key,
-                value: Buffer.from(value, 'base64'),
+                value: Buffer.isBuffer(value) ? value : Buffer.from(value, 'base64'),
             })));
         }
         res.json({ success: true, count: entries.length });
@@ -4283,7 +4501,8 @@ app.get('/api/backup/export', async (req, res, next) => {
             ...sidecarEntries.filter(Boolean),
             ...canonicalEntries,
         ].sort((a, b) => a.sortKey.localeCompare(b.sortKey));
-        const dbSize = settingsOnly ? settingsDbValue.length : kvSize('database/database.bin');
+        const exportDbValue = settingsOnly ? settingsDbValue : kvGet('database/database.bin');
+        const dbSize = exportDbValue?.length || 0;
         const totalBytes = namespacedEntries.reduce((sum, entry) => {
             return sum + 8 + Buffer.byteLength(entry.backupName, 'utf-8') + entry.size;
         }, 0) + (dbSize ? 8 + Buffer.byteLength('database.risudat', 'utf-8') + dbSize : 0);
@@ -4332,7 +4551,7 @@ app.get('/api/backup/export', async (req, res, next) => {
         }
 
         if (!closed && dbSize) {
-            const dbValue = settingsOnly ? settingsDbValue : kvGet('database/database.bin');
+            const dbValue = exportDbValue;
             if (dbValue) {
                 const ok = res.write(encodeBackupEntry('database.risudat', dbValue));
                 if (!ok) {
@@ -4432,6 +4651,7 @@ app.post('/api/backup/import', async (req, res, next) => {
             }, BACKUP_NDJSON_HEARTBEAT_MS);
 
             let lastProgressWrite = 0;
+            let lastPublishProgress = '';
             const totalBytes = Number.isFinite(contentLength) ? contentLength : 0;
             const result = await importBackupFromSource(req, {
                 maxBytes: BACKUP_IMPORT_MAX_BYTES,
@@ -4444,6 +4664,14 @@ app.post('/api/backup/import', async (req, res, next) => {
                 },
                 onPhase: phase => {
                     res.write(JSON.stringify({ type: 'phase', phase, bytes: totalBytes, totalBytes }) + '\n');
+                },
+                onPublishProgress: event => {
+                    const percent = event.total > 0 ? Math.floor((event.current / event.total) * 100) : 0;
+                    const key = `${event.stage}:${event.phase}:${percent}`;
+                    if (key === lastPublishProgress) return;
+                    lastPublishProgress = key;
+                    res.write(JSON.stringify({ type: 'phase', phase: event.stage, operation: event.phase,
+                        current: event.current, total: event.total }) + '\n');
                 },
             });
             res.write(JSON.stringify({
@@ -4690,6 +4918,7 @@ app.post('/api/backup/server/restore', async (req, res, next) => {
         }, BACKUP_NDJSON_HEARTBEAT_MS);
 
         let lastProgressWrite = 0;
+        let lastPublishProgress = '';
         const { createReadStream } = require('fs');
         const stream = createReadStream(filePath, { highWaterMark: 256 * 1024 });
         const result = await importBackupFromSource(stream, {
@@ -4702,6 +4931,14 @@ app.post('/api/backup/server/restore', async (req, res, next) => {
             },
             onPhase: phase => {
                 res.write(JSON.stringify({ type: 'phase', phase, bytes: fileStat.size, totalBytes: fileStat.size }) + '\n');
+            },
+            onPublishProgress: event => {
+                const percent = event.total > 0 ? Math.floor((event.current / event.total) * 100) : 0;
+                const key = `${event.stage}:${event.phase}:${percent}`;
+                if (key === lastPublishProgress) return;
+                lastPublishProgress = key;
+                res.write(JSON.stringify({ type: 'phase', phase: event.stage, operation: event.phase,
+                    current: event.current, total: event.total }) + '\n');
             },
         });
         res.write(JSON.stringify({
@@ -5040,8 +5277,7 @@ app.post('/api/chat-content/:chaId/:chatIndex', async (req, res, next) => {
                             const fullDb = reassembleFullDb(stripChatsFromDb(dbObj));
                             const encoded = Buffer.from(encodeRisuSaveLegacy(fullDb));
                             try {
-                                kvSet('database/database.bin', encoded);
-                                persistCanonicalProjection(fullDb);
+                                persistCanonicalProjection(fullDb, encoded);
                             } catch (err) {
                                 if (err && typeof err === 'object') {
                                     try { err.attemptedSize = encoded.length; } catch {}
@@ -5099,12 +5335,17 @@ function scanHexFilesInDir(dirPath) {
 }
 
 async function replaceWithLegacySaveEntries(entries) {
-    await flushPendingDb();
-    maybeCollectUnreferencedObjects();
-    invalidateDbCache();
-    await kvReplaceAllAsync(entries);
-    writeFileSync(migrationMarkerPath, new Date().toISOString(), 'utf-8');
-    return { imported: entries.length };
+    const incoming = new Map(entries.map(entry => [entry.key, entry.value]));
+    if (incoming.size !== entries.length) throw new Error('Duplicate save-folder entry');
+    const database = await decodeImportDatabase(incoming.get('database/database.bin'), key => incoming.get(key));
+    const canonicalStagingDir = await fs.mkdtemp(path.join(savePath, '.save-import-'));
+    try {
+        await publishImportedSnapshot(database, entries, canonicalStagingDir);
+        writeFileSync(migrationMarkerPath, new Date().toISOString(), 'utf-8');
+        return { imported: entries.length };
+    } finally {
+        await fs.rm(canonicalStagingDir, { recursive: true, force: true });
+    }
 }
 
 async function importHexFilesFromDir(dirPath) {
@@ -5135,6 +5376,51 @@ async function importHexEntries(entries) {
 
     return replaceWithLegacySaveEntries(entries);
 }
+
+app.post('/api/v2-items/preview', async (req, res) => {
+    if (!await checkAuth(req, res)) return;
+    if (!checkActiveSession(req, res)) return;
+    try {
+        res.json(createV2ItemImportService({ targetRoot: savePath }).preview(req.body?.sourcePath));
+    } catch (error) {
+        res.status(400).json({ error: error.message || 'V2 source preview failed' });
+    }
+});
+
+app.post('/api/v2-items/import', async (req, res) => {
+    if (!await checkAuth(req, res)) return;
+    if (!checkActiveSession(req, res)) return;
+    if (typeof req.body?.revision !== 'string' || !req.body.revision) {
+        res.status(400).json({ error: 'Preview revision is required' });
+        return;
+    }
+    if (importInProgress) {
+        res.status(409).json({ error: 'Another import is already in progress' });
+        return;
+    }
+    importInProgress = true;
+    res.setHeader('content-type', 'application/x-ndjson; charset=utf-8');
+    const send = value => res.write(`${JSON.stringify(value)}\n`);
+    try {
+        await flushPendingDb();
+        send({ type: 'progress', current: 0, total: 1 });
+        const result = await queueStorageOperation(() => createV2ItemImportService({ targetRoot: savePath }).execute({
+            sourceRoot: req.body?.sourcePath,
+            revision: req.body?.revision,
+            selection: req.body?.selection,
+            onProgress: progress => send({ type: 'progress', ...progress }),
+        }));
+        invalidateDbCache();
+        canonicalProjectionReady = true;
+        canonicalProjectionSync.accept();
+        send({ type: 'done', ...result });
+    } catch (error) {
+        send({ type: 'error', message: error.message || 'V2 item import failed' });
+    } finally {
+        importInProgress = false;
+        res.end();
+    }
+});
 
 app.post('/api/migrate/save-folder/scan', async (req, res, next) => {
     if (!await checkAuth(req, res)) return;
@@ -6572,8 +6858,9 @@ async function getHttpsOptions() {
 async function startServer() {
     try {
         await migrateInlaysToFilesystem();
-        await migrateRemoteBlocksIfNeeded();
+        if (!existsSync(path.join(savePath, 'settings/layout.json'))) await migrateRemoteBlocksIfNeeded();
         const port = process.env.PORT || DEFAULT_PORT;
+        console.log(`[Server] Data root: ${savePath}`);
         const httpsOptions = await getHttpsOptions();
         let server;
 
@@ -6639,3 +6926,11 @@ for (const sig of ['SIGTERM', 'SIGINT']) {
     await startServer();
 
 })();
+}
+
+require('./v2-migration-gate.cjs').beforeStartup().then(allowed => {
+    if (allowed) startApplication();
+}).catch(error => {
+    console.error('[V2 migration]', error.message);
+    process.exitCode = 1;
+});

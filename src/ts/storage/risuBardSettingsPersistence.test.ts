@@ -43,11 +43,82 @@ describe('RisuBard settings persistence', () => {
             hypaV3: false,
             memoryAlgorithmType: 'none',
             showMenuHypaMemoryModal: false,
+            risuBardBardChanEnabled: false,
+            risuBardBardChanModelMode: 'memory',
+            risuBardAnalysisExcludeUserMessages: false,
         })
         expect(newChatModelDefaults()).toMatchObject({ supaMemory: false })
         expect(normalizeChat({ message: [], note: '', name: '', localLore: [] })).toMatchObject({
             supaMemory: false,
         })
+    })
+
+    test('seeds new chats from the previous effective persona or the selected global persona', () => {
+        setDatabase({
+            characters: [], formatingOrder: ['main'], loreBook: [],
+            personas: [
+                { id: 'global-1', name: 'First', personaPrompt: '', icon: '' },
+                { id: 'global-2', name: 'Last selected', personaPrompt: '', icon: '' },
+            ],
+            selectedPersona: 1,
+            username: 'User', userIcon: '', userNote: '',
+        } as any)
+
+        const character = {
+            personas: [{ id: 'character-persona', name: 'Local', personaPrompt: '', icon: '' }],
+        } as any
+
+        expect(newChatModelDefaults()).toMatchObject({ bindedPersona: 'global-2' })
+        expect(newChatModelDefaults(character, { bindedPersona: 'character-persona' }))
+            .toMatchObject({ bindedPersona: 'character-persona' })
+    })
+
+    test.each([
+        { stored: true, expected: true },
+        { stored: false, expected: false },
+        { stored: 'true', expected: false },
+        { stored: undefined, expected: false },
+    ])('normalizes the Bard-chan setting: $stored', ({ stored, expected }) => {
+        setDatabase({
+            characters: [], formatingOrder: ['main'], loreBook: [],
+            personas: [], username: 'User', userIcon: '', userNote: '',
+            risuBardBardChanEnabled: stored,
+        } as any)
+
+        expect(getDatabase().risuBardBardChanEnabled).toBe(expected)
+    })
+
+    test.each([
+        { stored: 'model', expected: 'model' },
+        { stored: 'memory', expected: 'memory' },
+        { stored: 'unknown', expected: 'memory' },
+        { stored: undefined, expected: 'memory' },
+    ])('normalizes the Bard-chan model: $stored', ({ stored, expected }) => {
+        setDatabase({
+            characters: [], formatingOrder: ['main'], loreBook: [],
+            personas: [], username: 'User', userIcon: '', userNote: '',
+            risuBardBardChanModelMode: stored,
+        } as any)
+
+        expect(getDatabase().risuBardBardChanModelMode).toBe(expected)
+    })
+
+    test.each([
+        { stored: true, expected: true },
+        { stored: false, expected: false },
+        { stored: 'true', expected: false },
+        { stored: undefined, expected: false },
+    ])('normalizes analysis user-message exclusion: $stored', ({
+        stored, expected,
+    }) => {
+        setDatabase({
+            characters: [], formatingOrder: ['main'], loreBook: [],
+            personas: [], username: 'User', userIcon: '', userNote: '',
+            risuBardAnalysisExcludeUserMessages: stored,
+        } as any)
+
+        expect(getDatabase().risuBardAnalysisExcludeUserMessages)
+            .toBe(expected)
     })
 
     test.each([

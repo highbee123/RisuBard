@@ -1,8 +1,9 @@
 import { writable } from "svelte/store";
+import { ensureActiveModulesReady, isNativeRuntime } from './storage/nativeRuntime';
 import type { character, Database } from "./storage/database.svelte";
 import { type simpleCharacterArgument } from "./parser/parser.svelte";
 import type { alertData } from "./alert";
-import { moduleUpdate } from "./process/modules";
+import { moduleUpdate, getModules } from "./process/modules";
 import { deepTouch } from "./gui/deepTouch.svelte";
 import { resetScriptCache } from "./process/scripts";
 import type { hubType } from "./characterCards";
@@ -260,6 +261,11 @@ $effect.root(() => {
         DBState?.db?.characters?.[selIdState.selId]?.hideChatIcon
         DBState?.db?.characters?.[selIdState.selId]?.backgroundHTML
         DBState?.db?.moduleIntergration
-        moduleUpdate()
+        if (isNativeRuntime()) {
+            // Resolving synchronously subscribes this effect to every actual
+            // scope (persona bindings and same-length ID replacements included).
+            getModules()
+            void ensureActiveModulesReady().then(() => moduleUpdate()).catch(console.error)
+        } else moduleUpdate()
     })
 })

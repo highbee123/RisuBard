@@ -1,4 +1,5 @@
 import { get, writable } from "svelte/store";
+import { nativeRuntime, mergeNativeCharacterInput, mergeNativeDatabaseInput } from '../storage/nativeRuntime';
 import { language } from "../../lang";
 import { getCurrentCharacter, getDatabase, setDatabase, setDatabaseLite } from "../storage/database.svelte";
 import { alertConfirm, alertError, alertPluginConfirm } from "../alert";
@@ -548,7 +549,7 @@ export const getV2PluginAPIs = (pluginName = '') => {
         setChar: (char: any) => {
             const db = getDatabase()
             const charid = get(selectedCharID)
-            db.characters[charid] = char
+            db.characters[charid] = mergeNativeCharacterInput(db.characters[charid], char)
             setDatabaseLite(db)
         },
         addProvider: (name: string, func: (arg: PluginV2ProviderArgument, abortSignal?: AbortSignal) => Promise<{ success: boolean, content: string }>, options?: PluginV2ProviderOptions) => {
@@ -772,6 +773,7 @@ export const getV2PluginAPIs = (pluginName = '') => {
             }
         },
         setDatabaseLite: (newDb: any) => {
+            newDb = mergeNativeDatabaseInput(newDb)
             const db = getDatabase();
             db.pluginCustomStorage ??= {}
             for (const key of Object.keys(newDb)) {
@@ -785,6 +787,8 @@ export const getV2PluginAPIs = (pluginName = '') => {
             DBState.db = db;
         },
         setDatabase: async (newDb: any) => {
+            if (newDb.characters || newDb.modules) await nativeRuntime?.hydrateAll()
+            newDb = mergeNativeDatabaseInput(newDb)
             const db = getDatabase();
             db.pluginCustomStorage ??= {}
             for (const key of Object.keys(newDb)) {
@@ -837,6 +841,9 @@ export const getV2PluginAPIs = (pluginName = '') => {
 }
 
 export async function loadV2Plugin(plugins: RisuPlugin[]) {
+    // Legacy plugins expose synchronous whole-state getters. Their explicit
+    // compatibility boundary must prepare real documents before executing code.
+    if (plugins.length) await nativeRuntime?.hydrateAll()
 
     if (pluginV2.loaded) {
         for (const unload of pluginV2.unload) {

@@ -300,7 +300,7 @@ describe('content-type compatibility', () => {
 
 type NdjsonEvent =
   | { type: 'progress'; bytes: number; totalBytes: number }
-  | { type: 'phase'; phase: 'validating' | 'publishing' | 'finalizing' }
+  | { type: 'phase'; phase: 'validating' | 'converting' | 'verifying' | 'publishing' | 'finalizing'; operation?: string; current?: number; total?: number }
   | { type: 'heartbeat' }
   | { type: 'done'; ok: boolean; assetsRestored?: number; coldStorageFailed?: number }
   | { type: 'error'; message: string }
@@ -510,11 +510,12 @@ describe('ndjson streaming import', () => {
 
     const ndjson = await importViaNdjson(client, seed)
     expect(ndjson.done?.ok).toBe(true)
-    expect(ndjson.phases.map(event => event.phase)).toEqual([
-      'validating',
-      'publishing',
-      'finalizing',
-    ])
+    const phases = ndjson.phases.map(event => event.phase)
+    expect(phases[0]).toBe('validating')
+    expect(phases.at(-1)).toBe('finalizing')
+    expect(phases).toContain('converting')
+    expect(phases).toContain('verifying')
+    expect(phases).toContain('publishing')
   })
 
   // T6 — this is *the* reason the patch exists. If a future change drops

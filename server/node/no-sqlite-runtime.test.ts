@@ -18,12 +18,17 @@ function runtimeFiles(directory: string): string[] {
 describe('native SQLite removal', () => {
     it('has no runtime SQLite import or database creation', () => {
         const offenders = runtimeFiles(path.join(root, 'server'))
-            // db.cjs is the one-shot dispatcher that notices an old risuai.db;
-            // only the importer may load a SQLite reader.
-            .filter(file => !['legacy-sqlite-import.cjs', 'db.cjs'].includes(path.basename(file)))
+            // The one-shot importer and pre-start V2 planner may read an isolated
+            // copy of an old SQLite database; normal runtime files may not.
+            .filter(file => !['legacy-sqlite-import.cjs', 'db.cjs', 'v2-migration-gate.cjs', 'v2-migration-worker.cjs', 'v2-migration-plan.cjs'].includes(path.basename(file)))
             .filter(file => /better-sqlite3|new\s+Database\s*\(|\.db(?:['"`]|\b)/i.test(fs.readFileSync(file, 'utf8')))
             .map(file => path.relative(root, file))
         expect(offenders).toEqual([])
+        // The pre-start gate/worker may identify the old .db path, but only
+        // the existing one-shot importer may actually open SQLite.
+        for (const name of ['v2-migration-gate.cjs', 'v2-migration-worker.cjs']) {
+            expect(fs.readFileSync(path.join(root, 'server/node', name), 'utf8')).not.toMatch(/node:sqlite|better-sqlite3|new\s+Database(?:Sync)?\s*\(/)
+        }
     })
 
     it('does not declare or package better-sqlite3', () => {
@@ -134,16 +139,15 @@ describe('native SQLite removal', () => {
         expect(chatDraft).not.toContain('server SQLite `kv` table')
     })
 
-    it('uses one destructive apply sequence for both save-folder import paths', () => {
+    it('validates both save-folder imports before the shared journalled publication', () => {
         const server = fs.readFileSync(path.join(root, 'server', 'node', 'server.cjs'), 'utf8')
         const migrationBlock = server.slice(
             server.indexOf('// ── Save-folder migration endpoints'),
             server.indexOf('// ── Storage dashboard endpoints'),
         )
 
-        expect(migrationBlock.match(/await flushPendingDb\(\)/g)).toHaveLength(1)
-        expect(migrationBlock.match(/maybeCollectUnreferencedObjects\(\)/g)).toHaveLength(1)
-        expect(migrationBlock.match(/invalidateDbCache\(\)/g)).toHaveLength(1)
-        expect(migrationBlock.match(/kvReplaceAllAsync\(/g)).toHaveLength(1)
+        expect(migrationBlock.includes('await decodeImportDatabase(')).toBe(true)
+        expect(migrationBlock.match(/await publishImportedSnapshot\(/g)).toHaveLength(1)
+        expect(migrationBlock.includes('await kvReplaceAllAsync(')).toBe(false)
     })
 })

@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { tick } from 'svelte'
+    import { onDestroy, tick } from 'svelte'
     import {
         AlertTriangleIcon,
         BracesIcon,
@@ -58,6 +58,7 @@
     let conditionError = $state('')
     let bodyPreviewElement: HTMLPreElement | undefined = $state()
     let bodyField: HTMLTextAreaElement | undefined = $state()
+    let bodyFieldFocused = $state(false)
     let nameField: HTMLInputElement | undefined = $state()
     let visualBodyField: { focusSelection: (start: number, end: number) => void } | undefined = $state()
     let editorMode = $state<PromptV2EditorMode>(loadPromptV2EditorMode())
@@ -69,6 +70,12 @@
     let bodySyntaxJoin = $state<PromptV2Join>('and')
     let bodySyntaxConditions = $state<PromptV2Condition[]>([])
     let lastSearch: { item: PromptItem; query: string } | undefined
+    let visualBodyCommitTimer: ReturnType<typeof setTimeout> | undefined
+    let pendingVisualItem: PromptItem | undefined
+    let pendingVisualBody: string | undefined
+    let pendingVisualActivation: PromptV2Activation | null = null
+
+    const visualBodyCommitDelay = 750
 
     export async function findInBody(search: string) {
         if (!item) return
@@ -81,6 +88,35 @@
         revealTextareaMatch(bodyField, match)
         if (bodyPreviewElement) bodyPreviewElement.scrollTop = bodyField.scrollTop
         lastSearch = { item, query }
+    }
+
+    export function replaceCurrentBodyMatch(search: string, replacement: string): boolean {
+        const query = search.trim()
+        const currentItem = pendingVisualItem ?? item
+        const body = pendingVisualBody ?? bodyField?.value ?? parsedText?.body
+        const activation = pendingVisualBody !== undefined
+            ? pendingVisualActivation
+            : parsedText?.activation ?? null
+        if (!query || !currentItem || body === undefined) return false
+
+        const selectedStart = bodyField?.selectionStart ?? 0
+        const selectedEnd = bodyField?.selectionEnd ?? 0
+        const selected = body.slice(selectedStart, selectedEnd)
+        const match = selected.localeCompare(query, undefined, { sensitivity: 'accent' }) === 0
+            ? { start: selectedStart, end: selectedEnd }
+            : findTextareaMatch(body, query)
+        if (!match) return false
+
+        cancelPendingVisualCommit()
+        const next = buildTextItem(
+            body.slice(0, match.start) + replacement + body.slice(match.end),
+            activation,
+            currentItem,
+        )
+        if (!next) return false
+        lastSearch = undefined
+        onReplace(next)
+        return true
     }
 
     const textSource = $derived(item ? getPromptV2TextSource(item) : null)
@@ -113,9 +149,34 @@
         }
     })
 
+    function cancelPendingVisualCommit() {
+        if (visualBodyCommitTimer) clearTimeout(visualBodyCommitTimer)
+        visualBodyCommitTimer = undefined
+        pendingVisualItem = undefined
+        pendingVisualBody = undefined
+        pendingVisualActivation = null
+    }
+
+    export function flushPendingText() {
+        if (!pendingVisualItem || pendingVisualBody === undefined) return
+        if (visualBodyCommitTimer) clearTimeout(visualBodyCommitTimer)
+        visualBodyCommitTimer = undefined
+        const next = buildTextItem(pendingVisualBody, pendingVisualActivation, pendingVisualItem)
+        pendingVisualItem = undefined
+        pendingVisualBody = undefined
+        pendingVisualActivation = null
+        if (next) onReplace(next)
+    }
+
+    onDestroy(flushPendingText)
+
     function patchItem(patch: Record<string, unknown>) {
-        if (!item) return
-        onReplace({ ...item, ...patch } as PromptItem)
+        const current = pendingVisualItem && pendingVisualBody !== undefined
+            ? buildTextItem(pendingVisualBody, pendingVisualActivation, pendingVisualItem)
+            : item
+        if (!current) return
+        cancelPendingVisualCommit()
+        onReplace({ ...current, ...patch } as PromptItem)
     }
 
     async function beginNameEdit() {
@@ -138,22 +199,48 @@
         return '0'
     }
 
-    function applyText(body: string, activation: PromptV2Activation | null = parsedText?.activation ?? null) {
-        if (!item || !textSource || !parsedText?.editable) return
+    function buildTextItem(
+        body: string,
+        activation: PromptV2Activation | null,
+        current: PromptItem | undefined = pendingVisualItem ?? item,
+    ): PromptItem | undefined {
+        if (!current) return
+        const currentSource = getPromptV2TextSource(current)
+        if (!currentSource || !parsePromptV2Text(currentSource.source).editable) return
         try {
-            const next = { ...item } as PromptItem
+            const next = { ...current } as PromptItem
             setPromptV2TextSource(next, compilePromptV2Text(body, activation))
             conditionError = ''
-            onReplace(next)
+            return next
         } catch (error) {
             conditionError = error instanceof Error ? error.message : String(error)
         }
     }
 
+    function applyText(body: string, activation: PromptV2Activation | null = parsedText?.activation ?? null) {
+        const next = buildTextItem(body, activation)
+        if (!next) return
+        cancelPendingVisualCommit()
+        onReplace(next)
+    }
+
+    function scheduleVisualText(body: string) {
+        if (!item || !textSource || !parsedText?.editable) return
+        if (visualBodyCommitTimer) clearTimeout(visualBodyCommitTimer)
+        pendingVisualItem ??= item
+        pendingVisualBody = body
+        pendingVisualActivation = parsedText.activation
+        visualBodyCommitTimer = setTimeout(flushPendingText, visualBodyCommitDelay)
+    }
+
+    function currentBody(): string {
+        return pendingVisualBody ?? parsedText?.body ?? ''
+    }
+
     function enableConditions() {
         if (!parsedText?.editable || parsedText.activation || definitions.length === 0) return
         const definition = definitions[0]
-        applyText(parsedText.body, {
+        applyText(currentBody(), {
             join: 'and',
             conditions: [{ key: definition.key, operator: 'is', value: defaultValue(definition) }],
         })
@@ -161,7 +248,7 @@
 
     function updateActivation(patch: Partial<PromptV2Activation>) {
         if (!parsedText?.activation) return
-        applyText(parsedText.body, { ...parsedText.activation, ...patch })
+        applyText(currentBody(), { ...parsedText.activation, ...patch })
     }
 
     function updateCondition(index: number, patch: Partial<PromptV2Condition>) {
@@ -180,7 +267,7 @@
     function addCondition(definition = definitions[0]) {
         if (!definition || !parsedText?.editable) return
         if (!parsedText.activation) {
-            applyText(parsedText.body, {
+            applyText(currentBody(), {
                 join: 'and',
                 conditions: [{ key: definition.key, operator: 'is', value: defaultValue(definition) }],
             })
@@ -198,7 +285,7 @@
         if (!parsedText?.activation) return
         const conditions = parsedText.activation.conditions.filter((_, conditionIndex) => conditionIndex !== index)
         if (conditions.length === 0) {
-            applyText(parsedText.body, null)
+            applyText(currentBody(), null)
             activationDialogOpen = false
         } else {
             updateActivation({ conditions })
@@ -208,6 +295,7 @@
     async function setEditorMode(mode: PromptV2EditorMode) {
         if (mode === editorMode) return
         if (bodyField) bodySelection = { start: bodyField.selectionStart, end: bodyField.selectionEnd }
+        if (editorMode === 'visual') flushPendingText()
         editorMode = mode
         savePromptV2EditorMode(mode)
         await tick()
@@ -252,7 +340,7 @@
     async function insertBodyCondition() {
         if (!parsedText || bodySyntaxConditions.length === 0) return
         const result = insertPromptV2BodyCondition(
-            parsedText.body,
+            currentBody(),
             bodySelection.start,
             bodySelection.end,
             { join: bodySyntaxJoin, conditions: bodySyntaxConditions },
@@ -270,8 +358,13 @@
     }
 
     function replaceType(type: PromptType) {
-        if (!item || type === item.type) return
-        const name = item.name
+        const current = pendingVisualItem && pendingVisualBody !== undefined
+            ? buildTextItem(pendingVisualBody, pendingVisualActivation, pendingVisualItem)
+            : item
+        if (!current || type === current.type) return
+        const name = current.name
+        const currentSource = getPromptV2TextSource(current)
+        const currentParsed = currentSource ? parsePromptV2Text(currentSource.source) : null
         let next: PromptItem
         if (type === 'plain' || type === 'jailbreak' || type === 'cot') {
             next = { type, type2: 'normal', text: '', role: 'system', name }
@@ -287,9 +380,10 @@
             next = { type, name, role2: type === 'lorebook' || type === 'postEverything' ? undefined : 'system' }
         }
 
-        if (textSource && parsedText?.editable && getPromptV2TextSource(next)) {
-            setPromptV2TextSource(next, compilePromptV2Text(parsedText.body, parsedText.activation))
+        if (currentSource && currentParsed?.editable && getPromptV2TextSource(next)) {
+            setPromptV2TextSource(next, compilePromptV2Text(currentParsed.body, currentParsed.activation))
         }
+        cancelPendingVisualCommit()
         onReplace(next)
     }
 
@@ -535,7 +629,7 @@
                     {:else if definitions.length === 0}
                         <div class="mt-4 rounded-lg border border-dashed border-darkborderc p-3 text-sm text-textcolor2">
                             <p>{language.promptV2.noToggleVariables}</p>
-                            <ShButton size="sm" variant="outline" className="mt-3" onclick={onOpenToggleSetup}>
+                            <ShButton size="sm" variant="outline" className="mt-3" onclick={() => { flushPendingText(); onOpenToggleSetup() }}>
                                 <SlidersHorizontalIcon size={14} />
                                 {language.promptV2.togglesMode}
                             </ShButton>
@@ -670,7 +764,8 @@
                             <CbsConditionView
                                 bind:this={visualBodyField}
                                 value={parsedText.body}
-                                onInput={applyText}
+                                onInput={scheduleVisualText}
+                                onblur={flushPendingText}
                                 variableLabels={visualVariableLabels}
                                 switchVariables={definitions.filter(definition => definition.type === 'switch').map(definition => definition.key)}
                                 previewSegments={bodyPreviewSegments}
@@ -694,12 +789,14 @@
                                 class="prompt-body-field"
                                 bind:this={bodyField}
                                 use:persistElementHeight={'prompt-v2-body'}
-                                class:prompt-body-field--preview={hasBodyPreview}
+                                class:prompt-body-field--preview={hasBodyPreview && !bodyFieldFocused}
                                 class:prompt-body-field--active={previewState === true}
                                 class:prompt-body-field--inactive={previewState === false}
                                 value={parsedText.body}
                                 readonly={!parsedText.editable}
                                 spellcheck="false"
+                                onfocus={() => { bodyFieldFocused = true }}
+                                onblur={() => { bodyFieldFocused = false }}
                                 onselect={() => updateBodySelection()}
                                 onscroll={syncBodyPreviewScroll}
                                 oninput={(event) => applyText(event.currentTarget.value)}

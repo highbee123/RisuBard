@@ -3,7 +3,8 @@
 const fs = require('fs');
 const pageFoldLogs = require('./pagefold-logs.cjs');
 const path = require('path');
-const { atomicWriteFile, atomicWriteJson, readVerifiedJson } = require('./file-store.cjs');
+const { createHash, randomUUID } = require('crypto');
+const { atomicWriteFile, atomicWriteJson, readVerifiedJson, checksumFile, fsyncDirectory } = require('./file-store.cjs');
 const { maskSensitive } = require('./logs.cjs');
 
 const MAX_TOTAL_BYTES = 256 * 1024 * 1024;
@@ -83,30 +84,107 @@ function normalizeEntry(entry) {
     };
 }
 
-function readJsonl(file) {
-    if (!fs.existsSync(file)) return [];
-    return fs.readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean).map((line, index) => {
-        try { return JSON.parse(line); } catch { throw new Error(`Invalid JSONL at ${file}:${index + 1}`); }
-    });
+// Retain at most one line, including UTF-8 characters split across read chunks.
+function* jsonlLines(file) {
+    if (!fs.existsSync(file)) return;
+    const fd = fs.openSync(file, 'r');
+    let parts = []; let length = 0; let offset = 0; let number = 0;
+    try {
+        for (;;) {
+            const buffer = Buffer.allocUnsafe(64 * 1024);
+            const bytes = fs.readSync(fd, buffer, 0, buffer.length, null);
+            if (!bytes) break;
+            let start = 0;
+            for (let index = 0; index < bytes; index++) {
+                if (buffer[index] !== 10) continue;
+                const part = buffer.subarray(start, index);
+                const line = parts.length ? Buffer.concat([...parts, part], length + part.length) : part;
+                const end = offset + length + part.length + 1;
+                yield { text: line.toString('utf8'), offset, end, number: ++number };
+                offset = end; parts = []; length = 0; start = index + 1;
+            }
+            if (start < bytes) { parts.push(buffer.subarray(start, bytes)); length += bytes - start; }
+        }
+        if (length) yield { text: Buffer.concat(parts, length).toString('utf8'), offset, end: offset + length, number: ++number };
+    } finally { fs.closeSync(fd); }
+}
+
+function* readJsonl(file) {
+    for (const line of jsonlLines(file)) {
+        if (!line.text.trim()) continue;
+        try { yield JSON.parse(line.text); } catch { throw new Error(`Invalid JSONL at ${file}:${line.number}`); }
+    }
+}
+
+function writeAll(fd, bytes) {
+    let offset = 0;
+    while (offset < bytes.length) offset += fs.writeSync(fd, bytes, offset, bytes.length - offset);
+}
+
+// Stream to a synced sibling, then publish atomically. Never truncate the original
+// if parsing, writing or validation fails. Keep the same one-backup convention.
+function rewriteJsonl(file, lines) {
+    const temp = `${file}.${randomUUID()}.tmp`;
+    const backup = `${file}.${randomUUID()}.bak.tmp`;
+    const fd = fs.openSync(temp, 'wx', 0o600);
+    try {
+        const hash = createHash('sha256');
+        try {
+            for (const line of lines) {
+                const bytes = Buffer.from(line + '\n', 'utf8');
+                writeAll(fd, bytes); hash.update(bytes);
+            }
+            fs.fsyncSync(fd);
+        } finally { fs.closeSync(fd); }
+        const digest = hash.digest('hex');
+        if (checksumFile(temp) !== digest) throw new Error('Request log rewrite checksum verification failed');
+        if (fs.existsSync(file)) {
+            fs.copyFileSync(file, backup, fs.constants.COPYFILE_EXCL);
+            const backupFd = fs.openSync(backup, 'r+');
+            try { fs.fsyncSync(backupFd); } finally { fs.closeSync(backupFd); }
+            fs.renameSync(backup, `${file}.bak`);
+        }
+        fs.renameSync(temp, file);
+        atomicWriteFile(path.dirname(file), path.basename(file) + '.sha256', `${digest}\n`);
+        fsyncDirectory(path.dirname(file));
+    } finally {
+        for (const staged of [temp, backup]) if (fs.existsSync(staged)) fs.unlinkSync(staged);
+    }
 }
 
 function appendJsonl(file, rows) {
     if (!rows.length) return;
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    const fd = fs.openSync(file, 'a', 0o600);
-    try { fs.writeSync(fd, rows.map(row => JSON.stringify(row)).join('\n') + '\n', null, 'utf8'); fs.fsyncSync(fd); }
+    const fd = fs.openSync(file, 'a+', 0o600);
+    try {
+        const size = fs.fstatSync(fd).size;
+        if (size) {
+            const last = Buffer.alloc(1);
+            fs.readSync(fd, last, 0, 1, size - 1);
+            if (last[0] !== 10) writeAll(fd, Buffer.from('\n'));
+        }
+        for (const row of rows) writeAll(fd, Buffer.from(JSON.stringify(row) + '\n', 'utf8'));
+        fs.fsyncSync(fd);
+    }
     finally { fs.closeSync(fd); }
 }
 
-function summarize(rows) {
-    const durationRows = rows.filter(row => row.durationMs != null);
-    return {
-        requests: rows.length, failed: rows.filter(row => !row.success).length,
-        inputTokens: rows.reduce((n, row) => n + toNonNegInt(row.inputTokens), 0), outputTokens: rows.reduce((n, row) => n + toNonNegInt(row.outputTokens), 0),
-        cachedTokens: rows.reduce((n, row) => n + toNonNegInt(row.cachedTokens), 0), reasoningTokens: rows.reduce((n, row) => n + toNonNegInt(row.reasoningTokens), 0),
-        avgDurationMs: durationRows.length ? Math.round(durationRows.reduce((n, row) => n + row.durationMs, 0) / durationRows.length) : null,
-    };
+const USAGE_FIELDS = ['id', 'timestamp', 'category', 'source', 'purpose', 'chatId', 'sessionChatId', 'generationId', 'model', 'provider', 'success', 'durationMs', 'inputTokens', 'outputTokens', 'cachedTokens', 'reasoningTokens'];
+const usageRow = row => {
+    const result = Object.fromEntries(USAGE_FIELDS.filter(key => row[key] !== undefined).map(key => [key, row[key]]));
+    if (row.pageFold) {
+        result.pageFold = { ...row.pageFold };
+        delete result.pageFold.pdfContent;
+    }
+    return result;
+};
+const emptySummary = () => ({ requests: 0, failed: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0, reasoningTokens: 0, durationSum: 0, durationCount: 0 });
+function addToSummary(summary, row) {
+    summary.requests++; if (!row.success) summary.failed++;
+    for (const key of ['inputTokens', 'outputTokens', 'cachedTokens', 'reasoningTokens']) summary[key] += toNonNegInt(row[key]);
+    if (row.durationMs != null) { summary.durationSum += row.durationMs; summary.durationCount++; }
 }
+const finishSummary = ({ durationSum, durationCount, ...summary }) => ({ ...summary, avgDurationMs: durationCount ? Math.round(durationSum / durationCount) : null });
 
 const parseCsv = value => typeof value === 'string' && value.length ? value.split(',').filter(Boolean) : undefined;
 const parseNum = value => value ? Number(value) : undefined;
@@ -121,43 +199,55 @@ function createRequestLogs(opts = {}) {
     const minRows = opts.minRows ?? MIN_ROWS;
     const rotateEvery = opts.rotateEveryNRows ?? ROTATE_EVERY_N_ROWS;
     fs.mkdirSync(root, { recursive: true });
-    let requests = null;
-    let usage = null;
     let state = fs.existsSync(stateFile) ? readVerifiedJson(root, 'state.json') : { schemaVersion: 1, nextId: 1 };
     let insertedSinceRotate = 0;
-    const getRequests = () => requests ??= readJsonl(requestsFile);
-    const getUsage = () => usage ??= readJsonl(usageFile);
     const saveState = () => atomicWriteJson(root, 'state.json', state);
-    const rewrite = (relative, rows) => atomicWriteFile(root, relative, Buffer.from(rows.map(row => JSON.stringify(row)).join('\n') + (rows.length ? '\n' : ''), 'utf8'));
+
+    if (state.usageSchemaVersion !== 1) {
+        try {
+            if (fs.existsSync(usageFile)) rewriteJsonl(usageFile, (function* () {
+                for (const row of readJsonl(usageFile)) yield JSON.stringify(usageRow(row));
+            })());
+            state.usageSchemaVersion = 1;
+            saveState();
+        } catch (error) {
+            delete state.usageSchemaVersion;
+            console.warn('[request-logs] Usage log compaction failed', error);
+        }
+    }
 
     function rotateNow() {
         insertedSinceRotate = 0;
-        const rows = getRequests();
-        let bytes = 0; let keepFrom = rows.length;
-        for (let index = rows.length - 1; index >= 0; index--) {
-            bytes += rows[index].sizeBytes || 0;
-            const count = rows.length - index;
-            if (bytes <= maxTotalBytes || count <= minRows) keepFrom = index; else break;
+        if (!fs.existsSync(requestsFile)) return;
+        const size = fs.statSync(requestsFile).size;
+        if (size <= maxTotalBytes) return;
+        let budgetStart = size; let count = 0;
+        const recentOffsets = [];
+        for (const line of jsonlLines(requestsFile)) {
+            if (!line.text.trim()) continue;
+            if (size - line.offset <= maxTotalBytes) budgetStart = Math.min(budgetStart, line.offset);
+            if (minRows > 0) recentOffsets[count % minRows] = line.offset;
+            count++;
         }
-        if (keepFrom > 0) { requests = rows.slice(keepFrom); rewrite('requests.jsonl', requests); }
+        const minimumStart = recentOffsets.length ? recentOffsets[count % recentOffsets.length] : size;
+        const keepFrom = Math.min(budgetStart, minimumStart);
+        if (keepFrom > 0) rewriteJsonl(requestsFile, (function* () {
+            for (const line of jsonlLines(requestsFile)) if (line.offset >= keepFrom && line.text.trim()) yield line.text;
+        })());
     }
 
     function addRequestLogBatch(entries) {
         if (!Array.isArray(entries) || !entries.length) return 0;
-        const seenPdfIds = new Set(getUsage().filter(r => r.pageFold?.requestId).map(r => r.pageFold.requestId));
+        const seenPdfIds = new Set();
+        if (entries.some(entry => entry?.pageFold?.requestId)) {
+            for (const row of readJsonl(usageFile)) if (row.pageFold?.requestId) seenPdfIds.add(row.pageFold.requestId);
+        }
         entries = entries.filter(e => { if (!e?.pageFold?.requestId) return true; if (seenPdfIds.has(e.pageFold.requestId)) return false; seenPdfIds.add(e.pageFold.requestId); return true; });
         const rows = entries.slice(-MAX_BATCH_SIZE).filter(entry => entry && typeof entry === 'object' && typeof entry.url === 'string').map(entry => ({ id: state.nextId++, ...normalizeEntry(entry) }));
         if (!rows.length) return 0;
-        const requestCache = getRequests();
-        const usageRows = rows.filter(row => row.category === 'llm').map(row => {
-            if (!row.pageFold) return row;
-            const copy = { ...row, pageFold: { ...row.pageFold } };
-            delete copy.pageFold.pdfContent; delete copy.requestBody; delete copy.responseBody; delete copy.requestHeaders;
-            return copy;
-        });
-        const usageCache = getUsage();
-        appendJsonl(requestsFile, rows); requestCache.push(...rows);
-        appendJsonl(usageFile, usageRows); usageCache.push(...usageRows);
+        const usageRows = rows.filter(row => row.category === 'llm').map(usageRow);
+        appendJsonl(requestsFile, rows);
+        appendJsonl(usageFile, usageRows);
         saveState(); insertedSinceRotate += rows.length;
         if (insertedSinceRotate >= rotateEvery) rotateNow();
         return rows.length;
@@ -178,40 +268,65 @@ function createRequestLogs(opts = {}) {
 
     function queryRequestLogs(query = {}) {
         const limit = Math.min(Math.max(Number(query.limit) || 50, 1), 500);
-        return getRequests().filter(row => matches(row, query) && !(typeof query.beforeId === 'number' && row.id >= query.beforeId)).slice().sort((a, b) => b.id - a.id).slice(0, limit).map(row => {
-            const result = { ...row };
-            if (!query.withBodies) { delete result.requestHeaders; delete result.requestBody; delete result.responseBody; }
-            return result;
-        });
+        const rows = [];
+        for (const row of readJsonl(requestsFile)) {
+            if (!matches(row, query) || (typeof query.beforeId === 'number' && row.id >= query.beforeId)) continue;
+            if (rows.length === limit && row.id <= rows[rows.length - 1].id) continue;
+            if (!query.withBodies) { delete row.requestHeaders; delete row.requestBody; delete row.responseBody; }
+            rows.push(row); rows.sort((a, b) => b.id - a.id);
+            if (rows.length > limit) rows.pop();
+        }
+        return rows;
     }
 
-    const countRequestLogs = (query = {}) => getRequests().filter(row => matches(row, query)).length;
-    const getRequestLog = id => getRequests().find(row => row.id === id) || null;
-    function clearRequestLogs() { requests = []; rewrite('requests.jsonl', []); insertedSinceRotate = 0; }
+    function countRequestLogs(query = {}) { let count = 0; for (const row of readJsonl(requestsFile)) if (matches(row, query)) count++; return count; }
+    function getRequestLog(id) { for (const row of readJsonl(requestsFile)) if (row.id === id) return row; return null; }
+    function clearRequestLogs() { rewriteJsonl(requestsFile, []); insertedSinceRotate = 0; }
 
     function queryUsage(query = {}) {
-        const rows = getUsage().filter(row => matches(row, query));
-        const group = (keyFn, decorate) => {
-            const groups = new Map();
-            for (const row of rows) { const key = keyFn(row); if (!groups.has(key)) groups.set(key, []); groups.get(key).push(row); }
-            return [...groups.entries()].map(([key, values]) => ({ ...decorate(key, values[0]), ...summarize(values) }));
+        const total = emptySummary(); const daily = new Map(); const byModel = new Map(); const bySource = new Map();
+        const addGroup = (groups, key, fields, row) => {
+            if (!groups.has(key)) groups.set(key, { ...fields, ...emptySummary() });
+            addToSummary(groups.get(key), row);
         };
-        const daily = group(row => dayKey(row.timestamp), day => ({ day })).sort((a, b) => a.day.localeCompare(b.day));
-        const byModel = group(row => `${row.model ?? ''}\u0000${row.provider ?? ''}`, (_key, row) => ({ model: row.model, provider: row.provider })).sort((a, b) => (b.inputTokens + b.outputTokens) - (a.inputTokens + a.outputTokens));
-        const bySource = group(row => row.source, source => ({ source })).sort((a, b) => (b.inputTokens + b.outputTokens) - (a.inputTokens + a.outputTokens));
-        return { total: summarize(rows), daily, byModel, bySource };
+        for (const row of readJsonl(usageFile)) {
+            if (!matches(row, query)) continue;
+            addToSummary(total, row);
+            const day = dayKey(row.timestamp);
+            addGroup(daily, day, { day }, row);
+            addGroup(byModel, `${row.model ?? ''}\u0000${row.provider ?? ''}`, { model: row.model, provider: row.provider }, row);
+            addGroup(bySource, row.source, { source: row.source }, row);
+        }
+        const tokenOrder = (a, b) => (b.inputTokens + b.outputTokens) - (a.inputTokens + a.outputTokens);
+        return { total: finishSummary(total), daily: [...daily.values()].map(finishSummary).sort((a, b) => a.day.localeCompare(b.day)), byModel: [...byModel.values()].map(finishSummary).sort(tokenOrder), bySource: [...bySource.values()].map(finishSummary).sort(tokenOrder) };
     }
 
     function usageDimensions() {
-        const rows = getUsage(); const distinct = key => [...new Set(rows.map(row => row[key]).filter(value => value != null))].sort();
-        return { models: distinct('model'), categories: distinct('category'), sources: distinct('source') };
+        const models = new Set(); const categories = new Set(); const sources = new Set();
+        for (const row of readJsonl(usageFile)) {
+            if (row.model != null) models.add(row.model);
+            if (row.category != null) categories.add(row.category);
+            if (row.source != null) sources.add(row.source);
+        }
+        return { models: [...models].sort(), categories: [...categories].sort(), sources: [...sources].sort() };
     }
-    function clearUsage() { usage = []; rewrite('usage.jsonl', []); }
-    function storageStats() { const rows = getRequests(); return { requestCount: rows.length, requestBytes: rows.reduce((n, row) => n + (row.sizeBytes || 0), 0), usageCount: getUsage().length, maxTotalBytes }; }
+    function clearUsage() { rewriteJsonl(usageFile, []); }
+    function storageStats() {
+        let requestCount = 0; let requestBytes = 0; let usageCount = 0;
+        for (const row of readJsonl(requestsFile)) { requestCount++; requestBytes += row.sizeBytes || 0; }
+        for (const row of readJsonl(usageFile)) usageCount++;
+        return { requestCount, requestBytes, usageCount, maxTotalBytes };
+    }
 
     function registerRoutes(app, { auth, activeSession } = {}) {
         const guard = auth ?? (async () => true); const sessionGuard = activeSession ?? (() => true);
-        pageFoldLogs.register(app, { guard, sessionGuard, getRequests, getUsage, replace: (nextRequests, nextUsage) => { requests = nextRequests; usage = nextUsage; rewrite('requests.jsonl', requests); rewrite('usage.jsonl', usage); } });
+        pageFoldLogs.register(app, { guard, sessionGuard,
+            getRequests: () => [...readJsonl(requestsFile)], getUsage: () => [...readJsonl(usageFile)],
+            replace: (nextRequests, nextUsage) => {
+                rewriteJsonl(requestsFile, nextRequests.map(row => JSON.stringify(row)));
+                rewriteJsonl(usageFile, nextUsage.map(row => JSON.stringify(usageRow(row))));
+            },
+        });
         app.post('/api/request-logs', async (req, res, next) => { if (!await guard(req, res)) return; try { res.send({ success: true, written: addRequestLogBatch(Array.isArray(req.body) ? req.body : [req.body]) }); } catch (error) { next(error); } });
         app.get('/api/request-logs', async (req, res, next) => { if (!await guard(req, res)) return; try { const filter = { categories: parseCsv(req.query.categories), sources: parseCsv(req.query.sources), chatId: req.query.chat_id, sessionChatId: req.query.session_chat_id, successOnly: req.query.success === '1', failedOnly: req.query.failed === '1', since: parseNum(req.query.since), until: parseNum(req.query.until) }; res.send({ success: true, content: queryRequestLogs({ ...filter, beforeId: parseNum(req.query.before_id), limit: parseNum(req.query.limit), withBodies: req.query.bodies === '1' }), total: countRequestLogs(filter) }); } catch (error) { next(error); } });
         app.get('/api/request-logs/usage', async (req, res, next) => { if (!await guard(req, res)) return; try { res.send({ success: true, ...queryUsage({ categories: parseCsv(req.query.categories), sources: parseCsv(req.query.sources), models: parseCsv(req.query.models), since: parseNum(req.query.since), until: parseNum(req.query.until), successOnly: req.query.success === '1' }), dimensions: usageDimensions() }); } catch (error) { next(error); } });
@@ -220,7 +335,7 @@ function createRequestLogs(opts = {}) {
         app.delete('/api/request-logs', async (req, res, next) => { if (!await guard(req, res) || !sessionGuard(req, res)) return; try { clearRequestLogs(); if (req.query.usage === '1') clearUsage(); res.send({ success: true }); } catch (error) { next(error); } });
     }
 
-    try { rotateNow(); } catch {}
+    try { rotateNow(); } catch (error) { console.warn('[request-logs] Startup rotation failed', error); }
     return { addRequestLogBatch, queryRequestLogs, countRequestLogs, getRequestLog, clearRequestLogs, queryUsage, usageDimensions, clearUsage, storageStats, rotateNow, registerRoutes, close: () => {} };
 }
 

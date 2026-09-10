@@ -3,6 +3,7 @@ import { downloadFile, LocalWriter, forageStorage } from "../globalApi.svelte";
 import { encodeRisuSaveLegacy } from "../storage/risuSave";
 import { getDatabase, type Chat } from "../storage/database.svelte";
 import { fetchChatFromServer } from "../storage/chatStorage";
+import { nativeRuntime } from '../storage/nativeRuntime';
 import { language } from "src/lang";
 
 function formatBytes(bytes: number): string {
@@ -193,6 +194,7 @@ export async function SavePartialLocalBackup(){
         return
     }
 
+    await nativeRuntime?.hydrateAll()
     const db = getDatabase()
     const assetMap = new Map<string, { charName: string, assetName: string }>()
     
@@ -332,19 +334,27 @@ export function LoadLocalBackup(){
             input.remove();
             alertWait(`Loading local Backup... (Uploading ${file.name})`);
             const result = await forageStorage.importBackup(file, (loaded, total, phase) => {
+                const progress = total > 0 ? Math.floor((loaded / total) * 100) : 0
                 if (phase === 'validating') {
                     alertWait('Loading local Backup... (Validating backup)')
                     return
                 }
+                if (phase === 'converting') {
+                    alertWait(`Loading local Backup... (Creating V2 files ${progress}%)`)
+                    return
+                }
+                if (phase === 'verifying') {
+                    alertWait('Loading local Backup... (Verifying V2 files)')
+                    return
+                }
                 if (phase === 'publishing') {
-                    alertWait('Loading local Backup... (Publishing restored data)')
+                    alertWait(`Loading local Backup... (Publishing restored data ${progress}%)`)
                     return
                 }
                 if (phase === 'finalizing') {
                     alertWait('Loading local Backup... (Finalizing restore)')
                     return
                 }
-                const progress = total > 0 ? ((loaded / total) * 100).toFixed(2) : '0.00'
                 alertWait(`Loading local Backup... (${progress}%)`)
             })
             if (result.coldStorageFailed && result.coldStorageFailed > 0) {

@@ -77,7 +77,9 @@ describe('account backup import', () => {
     expect(result).toMatchObject({ ok: true, assetsRestored: 0 })
 
     const exported = await client.exportBackup()
-    expect(normalizeBackup(exported).normalized).toEqual(normalizeBackup(seed).normalized)
+    const expected = normalizeBackup(seed).normalized
+    expected.settingKeys = [...new Set([...expected.settingKeys, 'modules', 'loreBook'])].sort()
+    expect(normalizeBackup(exported).normalized).toEqual(expected)
   })
 
   test('rejects an invalid database without replacing the active database', async () => {

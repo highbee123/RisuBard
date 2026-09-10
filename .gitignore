@@ -48,6 +48,9 @@ __pycache__/
 dist.zip
 /scripts/*
 !/scripts/updater.cjs
+!/scripts/rehearse-save-migration.cjs
+!/scripts/recover-save-index.cjs
+!/scripts/recover-save.ps1
 !/scripts/portable/
 !/scripts/termux/
 !/scripts/check-help-keys.mjs

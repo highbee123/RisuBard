@@ -7,7 +7,9 @@ import {
     collectLoreBuilderSources,
     createLoreBuilderUserPreset,
     deleteLoreBuilderUserPreset,
+    loadLoreBuilderSelections,
     overwriteLoreBuilderUserPreset,
+    saveLoreBuilderSelections,
 } from './loreBuilder'
 
 const lore = (id: string, content: string): loreBook => ({
@@ -142,5 +144,21 @@ describe('lore builder prompt contract', () => {
         expect(deleteLoreBuilderUserPreset(created, 'user-1')).toEqual([])
         expect(() => overwriteLoreBuilderUserPreset(created, 'builtin:lore-style-ko', 'x'))
             .toThrow('lore-builder-preset-readonly')
+    })
+
+    it('round-trips context switch preferences and ignores malformed storage', () => {
+        const storage = localStorage
+        storage.clear()
+        const selections = {
+            systemPrompt: true,
+            characterDescription: false,
+            characterLorebook: false,
+            moduleLorebook: true,
+        }
+
+        saveLoreBuilderSelections(selections, storage)
+        expect(loadLoreBuilderSelections(storage)).toEqual(selections)
+        storage.setItem('risubard:lore-builder-selections:v1', '{broken')
+        expect(loadLoreBuilderSelections(storage)).toBeNull()
     })
 })

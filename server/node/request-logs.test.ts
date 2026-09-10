@@ -1,9 +1,10 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import http from 'node:http'
 import express from 'express'
 import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
+import { spawnSync } from 'node:child_process'
 import pkg from './request-logs.cjs'
 
 const { createRequestLogs, truncateBody, truncateTail, dayKey } = pkg as {
@@ -401,6 +402,99 @@ describe('url masking', () => {
 })
 
 describe('restart safety', () => {
+    it('streams legacy logs and removes usage bodies without losing statistics', () => {
+        const dir = path.join(tmpDir, 'legacy-large')
+        const root = path.join(dir, 'request-logs')
+        fs.mkdirSync(root, { recursive: true })
+        const rows = Array.from({ length: 12 }, (_, index) => ({
+            id: index + 1, ...entry({
+                requestBody: '한글🙂'.repeat(20_000),
+                responseBody: 'old response', requestHeaders: 'old headers',
+                injectionManifest: { items: [], totalTokens: 7 },
+            }), sizeBytes: 200_000,
+        }))
+        const jsonl = rows.map(row => JSON.stringify(row)).join('\r\n')
+        fs.writeFileSync(path.join(root, 'requests.jsonl'), jsonl)
+        fs.writeFileSync(path.join(root, 'usage.jsonl'), jsonl)
+        const readFile = fs.readFileSync.bind(fs)
+        const spy = vi.spyOn(fs, 'readFileSync').mockImplementation(((file: any, ...args: any[]) => {
+            if (/\.jsonl(?!\.sha256)(?:\.|$)/u.test(String(file))) {
+                throw new Error('Whole-file JSONL reads are forbidden')
+            }
+            return (readFile as any)(file, ...args)
+        }) as any)
+        try {
+            const reopened = createRequestLogs({ saveDir: dir, maxTotalBytes: 500_000, minRows: 1 })
+            expect(reopened.queryRequestLogs({ limit: 50 }).map((row: any) => row.id)).toEqual([12, 11])
+            expect(reopened.getRequestLog(12).requestBody).toBe(rows[11].requestBody)
+            expect(reopened.queryUsage({}).total.inputTokens).toBe(1200)
+            reopened.addRequestLogBatch([entry()])
+            expect(reopened.queryUsage({}).total.requests).toBe(13)
+            expect(reopened.storageStats().usageCount).toBe(13)
+            reopened.close()
+        } finally {
+            spy.mockRestore()
+        }
+        const usage = fs.readFileSync(path.join(root, 'usage.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line))
+        expect(usage).toHaveLength(13)
+        for (const row of usage) {
+            for (const field of ['requestBody', 'responseBody', 'requestHeaders', 'injectionManifest']) {
+                expect(row).not.toHaveProperty(field)
+            }
+        }
+        expect(fs.statSync(path.join(root, 'usage.jsonl')).size).toBeLessThan(20_000)
+    })
+
+    it('keeps the server and request logging available if old usage JSON is corrupt', () => {
+        const dir = path.join(tmpDir, 'corrupt-usage')
+        const root = path.join(dir, 'request-logs')
+        fs.mkdirSync(root, { recursive: true })
+        const original = JSON.stringify({ id: 1, ...entry() }) + '\n{broken\n'
+        fs.writeFileSync(path.join(root, 'usage.jsonl'), original)
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+        try {
+            const reopened = createRequestLogs({ saveDir: dir })
+            expect(warn).toHaveBeenCalled()
+            expect(fs.readFileSync(path.join(root, 'usage.jsonl'), 'utf8')).toBe(original)
+            expect(reopened.addRequestLogBatch([entry()])).toBe(1)
+            expect(reopened.queryRequestLogs({})).toHaveLength(1)
+            expect(reopened.queryUsage.bind(null, {})).toThrow(/Invalid JSONL/u)
+            expect(JSON.parse(fs.readFileSync(path.join(root, 'state.json'), 'utf8')).usageSchemaVersion).not.toBe(1)
+        } finally { warn.mockRestore() }
+    })
+
+    it('migrates and rotates hundreds of MB of logs within a 64 MB heap', () => {
+        const dir = path.join(tmpDir, 'limited-heap')
+        const root = path.join(dir, 'request-logs')
+        fs.mkdirSync(root, { recursive: true })
+        const requestFile = path.join(root, 'requests.jsonl')
+        const fd = fs.openSync(requestFile, 'w')
+        try {
+            for (let id = 1; id <= 256; id++) {
+                fs.writeSync(fd, JSON.stringify({ id, ...entry({ requestBody: 'X'.repeat(512 * 1024) }), sizeBytes: 512 * 1024 }) + '\n')
+            }
+        } finally { fs.closeSync(fd) }
+        fs.copyFileSync(requestFile, path.join(root, 'usage.jsonl'))
+        fs.writeFileSync(path.join(root, 'state.json'), JSON.stringify({ schemaVersion: 1, nextId: 257 }))
+        const child = spawnSync(process.execPath, ['--max-old-space-size=64', '-e', `
+            const { createRequestLogs } = require(process.argv[1]);
+            const logs = createRequestLogs({ saveDir: process.env.RISUBARD_DATA_ROOT, maxTotalBytes: 8 * 1024 * 1024, minRows: 2 });
+            logs.addRequestLogBatch([{ category: 'llm', url: 'https://example.invalid/probe', success: true, inputTokens: 7 }]);
+            const result = { requests: logs.queryRequestLogs({ limit: 500 }).length, usage: logs.queryUsage({}).total, peakRssKb: process.resourceUsage().maxRSS };
+            logs.rotateNow();
+            logs.close();
+            console.log(JSON.stringify(result));
+        `, path.resolve('server/node/request-logs.cjs')], {
+            env: { ...process.env, RISUBARD_DATA_ROOT: dir }, encoding: 'utf8', timeout: 30_000,
+        })
+        expect(child.status, child.stderr).toBe(0)
+        const result = JSON.parse(child.stdout)
+        expect(result.requests).toBeLessThan(20)
+        expect(result.usage.requests).toBe(257)
+        expect(result.usage.inputTokens).toBe(25_607)
+        expect(fs.statSync(path.join(root, 'usage.jsonl')).size).toBeLessThan(200_000)
+    })
+
     it('enforces the byte budget even when restarts reset the insert counter', () => {
         const dir = path.join(tmpDir, 'restarts')
         // rotateEveryNRows is never reached within a single "session", so
@@ -426,6 +520,16 @@ describe('restart safety', () => {
 })
 
 describe('usage table scope', () => {
+    it('stores only statistics after rotation and clearing request bodies', () => {
+        logs.addRequestLogBatch([entry({ requestHeaders: 'headers', requestBody: 'prompt', responseBody: 'answer' })])
+        logs.clearRequestLogs()
+        const row = JSON.parse(fs.readFileSync(path.join(tmpDir, 'request-logs', 'usage.jsonl'), 'utf8').trim())
+        expect(row).not.toHaveProperty('requestBody')
+        expect(row).not.toHaveProperty('responseBody')
+        expect(row).not.toHaveProperty('requestHeaders')
+        expect(logs.queryUsage({}).total.inputTokens).toBe(100)
+    })
+
     it('counts llm requests only', () => {
         // The usage table is never rotated, so non-token traffic (TTS, images,
         // polling) would permanently inflate the request count.

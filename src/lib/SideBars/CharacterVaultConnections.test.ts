@@ -179,7 +179,7 @@ describe('Character Vault sidebar integration', () => {
 
     test('clears the new-character badge through the shared access path', () => {
         const characters = source('src/ts/characters.ts')
-        const changeStart = characters.indexOf('export function changeChar(')
+        const changeStart = characters.indexOf('export async function changeChar(')
         const changeCharacter = characters.slice(changeStart)
         expect(characters).toContain(
             "import { clearCharacterVaultNew, pinCharacterVaultQuickAccess } from './characterVault'"

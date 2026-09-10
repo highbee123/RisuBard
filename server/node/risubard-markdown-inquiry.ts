@@ -5,6 +5,8 @@ import { normalizeRisuBardInquiryTokenBudget } from '../../src/ts/risubard/risuB
 import { selectMarkdownExcerpt } from './risubard-markdown-excerpt'
 
 const MAX_SELECTED_DOCUMENTS = 12
+const MAX_RERANK_CANDIDATES = 12
+const MAX_RERANK_EXCERPT_CHARACTERS = 320
 const MAX_SOURCE_CHARACTERS = 12_000
 const MAX_FALLBACK_CURRENT_INPUT_CHARACTERS = 128
 const MAX_CANDIDATES = 64
@@ -108,6 +110,13 @@ export interface MarkdownInquiryResult {
     evidenceRequests: Array<{
         messageId: string
         eventTitle: string
+    }>
+    rerankCandidates: Array<{
+        documentId: string
+        type: MarkdownWikiDocument['type']
+        title: string
+        excerpt: string
+        score: number
     }>
     entityCandidates: []
     metrics: {
@@ -802,6 +811,19 @@ export function inquireMarkdownDocuments(
             })),
         ],
         evidenceRequests,
+        rerankCandidates: prepared
+            .filter((candidate) => !requiredIds.has(candidate.document.id))
+            .slice(0, MAX_RERANK_CANDIDATES)
+            .map((candidate) => ({
+                documentId: candidate.document.id,
+                type: candidate.document.type,
+                title: candidate.document.title.slice(0, 160),
+                excerpt: candidate.content.slice(
+                    0,
+                    MAX_RERANK_EXCERPT_CHARACTERS,
+                ),
+                score: candidate.score,
+            })),
         entityCandidates: [],
         metrics: {
             candidateCount: candidates.size,

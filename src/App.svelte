@@ -10,7 +10,7 @@
     import { showRealmInfoStore, importCharacterProcess } from './ts/characterCards';
     import { importPreset, getDatabase, setDatabase, nodeOnlyVer } from './ts/storage/database.svelte';
     import { readModule } from './ts/process/modules';
-    import { notifySuccess } from './ts/alert';
+    import { alertClear, alertError, alertWait, notifySuccess } from './ts/alert';
     import { language } from './lang';
     import SavePopupIconComp from './lib/Others/SavePopupIcon.svelte';
     import Botpreset from './lib/Setting/botpreset.svelte';
@@ -36,6 +36,7 @@
     import BootBackupPrompt from './lib/Others/BootBackupPrompt.svelte';
     import PopupList from './lib/UI/PopupList.svelte';
     import LoadingOverlay from './lib/Others/LoadingOverlay.svelte';
+    import LoadingActivity from './lib/Others/LoadingActivity.svelte';
     import Toaster from './lib/UI/GUI/Toaster.svelte';
     import RequestStatusToaster from './lib/UI/GUI/RequestStatusToaster.svelte';
     import sendSound from './etc/send.mp3'
@@ -89,22 +90,48 @@
     e.preventDefault()
     const name = file.name.toLowerCase()
 
-    if (name.endsWith('.risup')) {
-        const data = new Uint8Array(await file.arrayBuffer())
-        await importPreset({ name: file.name, data })
-        notifySuccess(language.successImport)
-    } else if (name.endsWith('.risum')) {
-        const data = new Uint8Array(await file.arrayBuffer())
-        const module = await readModule(Buffer.from(data))
-        const db = getDatabase()
-        db.modules.push(module)
-        notifySuccess(language.successImport)
-    } else {
-        await importCharacterProcess({
-            name: file.name,
-            data: file
-        })
-        checkCharOrder()
+    try {
+        if (name.endsWith('.risup')) {
+            alertWait(language.fileDropImport.presetLoading(file.name))
+            const data = new Uint8Array(await file.arrayBuffer())
+            await importPreset({ name: file.name, data })
+            notifySuccess(language.fileDropImport.presetSuccess, {
+                description: file.name,
+            })
+        } else if (name.endsWith('.risum')) {
+            alertWait(language.fileDropImport.moduleLoading(file.name))
+            const data = new Uint8Array(await file.arrayBuffer())
+            const module = await readModule(Buffer.from(data))
+            if (!module) return
+            const db = getDatabase()
+            db.modules.push(module)
+            notifySuccess(language.fileDropImport.moduleSuccess, {
+                description: file.name,
+            })
+        } else if (name.endsWith('.js')) {
+            alertWait(language.fileDropImport.pluginLoading(file.name))
+            const source = Buffer.from(await file.arrayBuffer())
+                .toString('utf-8').replace(/^\uFEFF/gm, '')
+            const { importPlugin } = await import('./ts/plugins/plugins.svelte')
+            const imported = await importPlugin(source)
+            if (!imported) {
+                if ($alertStore.type === 'wait') alertClear()
+                return
+            }
+            notifySuccess(language.fileDropImport.pluginSuccess, {
+                description: file.name,
+            })
+        } else {
+            await importCharacterProcess({
+                name: file.name,
+                data: file
+            })
+            checkCharOrder()
+        }
+    } catch (cause) {
+        console.error(cause)
+        const reason = cause instanceof Error ? cause.message : String(cause)
+        alertError(language.fileDropImport.failed(file.name, reason))
     }
 }} onclick={() => {
     if(keepingSessionAlive){
@@ -201,8 +228,9 @@
     {:else if !$loadedStore}
         <div class="w-full h-full flex justify-center items-center text-textcolor text-xl bg-darkbg flex-col">
             <img
+                data-startup-logo="app"
                 class="mb-2 w-[min(80vw,25rem)] rounded-xl border border-darkborderc object-cover shadow-lg"
-                src="/assets/risubard-startup.webp" fetchpriority="high"
+                src="/assets/risubard-startup.webp" fetchpriority="high" decoding="sync"
                 alt="RisuBard"
                 width="500"
                 height="300"
@@ -292,6 +320,7 @@
     {/if}
     <PluginAlertModal />
     <LoadingOverlay />
+    <LoadingActivity />
     <UpdatePopup />
     <BootBackupPrompt />
     {#if popupStore.children}

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
 import { mount, tick, unmount } from 'svelte'
 import { get } from 'svelte/store'
 import ModuleChatMenu from './ModuleChatMenu.svelte'
@@ -71,16 +72,25 @@ describe('chat module manager', () => {
         expect(scopeButton('chat').getAttribute('aria-pressed')).toBe('false')
     })
 
-    test('toggles each scope independently without overwriting other chats or legacy character assignments', async () => {
+    test('opens from chat entry points without creating per-chat module settings', () => {
+        const sidebar = readFileSync('src/lib/SideBars/SideChatList.svelte', 'utf8')
+        const chatScreen = readFileSync('src/lib/ChatScreens/DefaultChatScreen.svelte', 'utf8')
+        expect(sidebar).not.toMatch(/chats\[char\.chatPage\]\.modules\s*\?\?=/)
+        expect(chatScreen).not.toMatch(/chats\[DBState\.db\.characters\[\$selectedCharID\]\.chatPage\]\.modules\s*\?\?=/)
+    })
+
+    test('toggles global and current-character scopes without rewriting individual chats', async () => {
         await openMenu()
         scopeButton('chat').click()
-        expect(DBState.db.characters[0].chats[0].modules).toEqual(['one'])
+        expect(DBState.db.characters[0].modules).toEqual(['legacy', 'one'])
+        expect(DBState.db.characters[0].chats[0].modules).toEqual([])
+        expect(DBState.db.characters[0].chats[1].modules).toEqual(['other'])
         expect(DBState.db.enabledModules).toEqual([])
         scopeButton('global').click()
         expect(DBState.db.enabledModules).toEqual(['one'])
         scopeButton('global').click()
         expect(DBState.db.enabledModules).toEqual([])
-        expect(DBState.db.characters[0].chats[0].modules).toEqual(['one'])
+        expect(DBState.db.characters[0].modules).toEqual(['legacy', 'one'])
         scopeButton('chat').click()
         expect(DBState.db.characters[0].chats[0].modules).toEqual([])
         expect(DBState.db.characters[0].chats[1].modules).toEqual(['other'])
@@ -89,22 +99,46 @@ describe('chat module manager', () => {
         expect(get(ReloadGUIPointer)).toBe(4)
     })
 
-    test('initializes missing chat assignments and ignores right-click activation', async () => {
+    test('renders compact icon-only scope controls', async () => {
+        await openMenu()
+        const source = readFileSync('src/lib/Setting/Pages/Module/ModuleChatMenu.svelte', 'utf8')
+        const scopes = document.querySelectorAll('.chat-module-scope')
+        expect(scopes).toHaveLength(2)
+        expect(document.querySelector('.chat-module-scope > span')).toBeNull()
+        for (const scope of scopes) {
+            const button = scope.querySelector<HTMLButtonElement>('.chat-module-toggle')!
+            const icon = button.querySelector('svg')!
+            expect(button.textContent).toBe('')
+            expect(button.getAttribute('aria-label')).toBeTruthy()
+            expect(icon.getAttribute('width')).toBe('19.2')
+            expect(icon.getAttribute('height')).toBe('19.2')
+        }
+        expect(source).toMatch(/\.chat-module-toggle\s*\{[^}]*width:\s*1\.5rem;[^}]*height:\s*1\.5rem;/)
+    })
+
+    test('does not initialize or mutate missing per-chat assignments', async () => {
         delete DBState.db.characters[0].chats[0].modules
         await openMenu()
         scopeButton('chat').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }))
         expect(DBState.db.characters[0].modules).toEqual(['legacy'])
         expect(requestImmediateSave).not.toHaveBeenCalled()
         scopeButton('chat').click()
-        expect(DBState.db.characters[0].chats[0].modules).toEqual(['one'])
+        expect(DBState.db.characters[0].modules).toEqual(['legacy', 'one'])
+        expect(DBState.db.characters[0].chats[0].modules).toBeUndefined()
     })
 
-    test('disables chat activation when no current chat exists', async () => {
+    test('allows character activation even when the character has no current chat', async () => {
+        DBState.db.characters[0].chats = []
+        await openMenu()
+        expect(scopeButton('chat').disabled).toBe(false)
+        scopeButton('chat').click()
+        expect(DBState.db.characters[0].modules).toEqual(['legacy', 'one'])
+    })
+
+    test('disables character activation when no character is selected', async () => {
         selectedCharID.set(-1)
         await openMenu()
         expect(scopeButton('chat').disabled).toBe(true)
-        scopeButton('global').click()
-        expect(DBState.db.enabledModules).toEqual(['one'])
     })
 
     test('preserves the module picker callback without changing activation', async () => {
@@ -117,10 +151,11 @@ describe('chat module manager', () => {
         expect(requestImmediateSave).not.toHaveBeenCalled()
     })
 
-    test('explains activation inherited from character settings', async () => {
+    test('reflects activation stored on the current character', async () => {
         DBState.db.characters[0].modules = ['one']
         await openMenu()
-        expect(document.querySelector('.chat-module-inherited')?.textContent).toBe(language.chatModuleActivation.characterEnabled)
+        expect(scopeButton('chat').getAttribute('aria-pressed')).toBe('true')
+        expect(document.querySelector('.chat-module-inherited')).toBeNull()
     })
 
     test('closes through the portal dialog close button', async () => {

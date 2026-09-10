@@ -28,6 +28,12 @@ const mocks = vi.hoisted(() => ({
         completed: true as const,
     })),
     createAuth: vi.fn(async () => 'auth'),
+    ensureCharacterReady: vi.fn(async (_id: string) => undefined),
+}))
+
+vi.mock('src/ts/storage/nativeRuntime', () => ({
+    nativeRuntime: undefined,
+    ensureCharacterReady: mocks.ensureCharacterReady,
 }))
 
 vi.mock('src/ts/stores.svelte', () => ({
@@ -107,7 +113,8 @@ function click(label: string) {
 describe('CharacterVaultDialog', () => {
     beforeEach(() => {
         mocks.db = makeDb()
-        mocks.requestImmediateSave.mockClear()
+        mocks.requestImmediateSave.mockReset().mockResolvedValue(undefined)
+        mocks.ensureCharacterReady.mockReset().mockResolvedValue(undefined)
         mocks.alertConfirm.mockClear().mockResolvedValue(true)
         mocks.alertInput.mockClear().mockResolvedValue('')
         mocks.selectedCharID.set.mockClear()
@@ -280,6 +287,21 @@ describe('CharacterVaultDialog', () => {
         })])
         expect(mocks.forkMemoryWiki).not.toHaveBeenCalled()
         expect(mocks.completeMemoryWikiFork).not.toHaveBeenCalled()
+    })
+
+    test('retains hydrated original bodies when a clone save fails and rolls back', async () => {
+        mocks.ensureCharacterReady.mockImplementationOnce(async id => {
+            const index = mocks.db.characters.findIndex(char => char.chaId === id)
+            mocks.db.characters[index] = { ...mocks.db.characters[index], desc: 'disk description', globalLore: [{ key: 'keep', content: 'keep' }], customscript: [{ in: 'a', out: 'b' }] } as any
+        })
+        mocks.requestImmediateSave.mockRejectedValueOnce(new Error('409 conflict'))
+        await render()
+        click('Alice 선택'); await tick()
+        click('선택 캐릭터 챗 제외 복제')
+        await vi.waitFor(() => expect(document.body.textContent).toContain('캐릭터 복제 실패'))
+        expect(mocks.db.characters).toHaveLength(3)
+        expect(mocks.db.characters[0]).toMatchObject({ desc: 'disk description', globalLore: [{ content: 'keep' }], customscript: [{ in: 'a', out: 'b' }] })
+        expect(mocks.requestImmediateSave).toHaveBeenCalledTimes(2)
     })
 
     test('does not expose characters that are in the trash', async () => {

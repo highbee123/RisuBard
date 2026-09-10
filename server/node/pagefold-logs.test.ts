@@ -88,3 +88,20 @@ it('exports more than 1000 saved PDF records with redaction on every record', as
         expect(logs.queryUsage({}).total.requests).toBe(1003)
     } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())) }
 })
+
+it('preserves PDF metadata while upstream compacts legacy usage logs', () => {
+    const saveDir = fs.mkdtempSync(path.join(os.tmpdir(), 'risubard-pagefold-test-')); dirs.push(saveDir)
+    const dir = path.join(saveDir, 'request-logs'); fs.mkdirSync(dir)
+    const old = [{ ...row('legacy'), id: 1 }, { ...row('normal'), id: 2, pageFold: undefined }]
+    fs.writeFileSync(path.join(dir, 'usage.jsonl'), old.map(entry => JSON.stringify(entry)).join('\n') + '\n')
+    const logs = createRequestLogs({ saveDir })
+    const saved = fs.readFileSync(path.join(dir, 'usage.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line))
+    expect(saved).toHaveLength(2)
+    expect(saved[0].pageFold).toMatchObject({ requestId: 'legacy', savedTokens: 80 })
+    expect(saved.every(entry => entry.requestBody === undefined && entry.responseBody === undefined)).toBe(true)
+    expect(saved[0].pageFold.pdfContent).toBeUndefined()
+    expect(saved[1].pageFold).toBeUndefined()
+    expect(logs.queryUsage({}).total.requests).toBe(2)
+    expect(logs.addRequestLogBatch([row('legacy')])).toBe(0)
+    expect(fs.existsSync(path.join(dir, 'usage.jsonl.bak'))).toBe(true)
+})

@@ -496,7 +496,7 @@
             saveTranslationEdit()
         }} />
     {:else if editMode}
-        <AutoresizeArea bind:value={message} onkeydown={finishMessageEdit} handleLongPress={() => {
+        <AutoresizeArea bind:value={message} onkeydown={finishMessageEdit} focusOnMount handleLongPress={() => {
             editMode = false
         }} />
     {:else if isComment}

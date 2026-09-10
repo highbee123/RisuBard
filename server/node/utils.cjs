@@ -213,12 +213,13 @@ class RisuSaveDecoder {
         // skipped (the historical behavior) — which loses any characters that
         // were saved as remote blocks by upstream RisuAI or by an earlier
         // NodeOnly version.
-        const { resolveRemote = null } = options;
+        const { resolveRemote = null, strict = false } = options;
         let offset = magicRisuSaveHeader.length;
         let db = {};
 
         while (offset < data.length) {
             try {
+                if (strict && offset + 7 > data.length) throw new Error('Truncated save block header');
                 const type = data[offset];
                 const compression = data[offset + 1] === 1;
                 offset += 2;
@@ -228,11 +229,15 @@ class RisuSaveDecoder {
                 const name = new TextDecoder().decode(data.subarray(offset, offset + nameLength));
                 offset += nameLength;
 
+                if (strict && offset + 4 > data.length) throw new Error('Truncated save block name');
+
                 const newArrayBuf = new ArrayBuffer(4);
                 const lengthSubUint8Buf = data.slice(offset, offset + 4);
                 new Uint8Array(newArrayBuf).set(lengthSubUint8Buf);
                 const length = new Uint32Array(newArrayBuf)[0];
                 offset += 4;
+
+                if (strict && offset + length > data.length) throw new Error('Truncated save block payload');
 
                 let blockData = data.subarray(offset, offset + length);
                 offset += length;
@@ -254,10 +259,21 @@ class RisuSaveDecoder {
                     content: new TextDecoder().decode(blockData)
                 });
             } catch (error) {
+                if (strict) throw error;
                 continue;
             }
         }
 
+        if (strict) {
+            const roots = this.blocks.filter(block => block.type === RisuSaveType.ROOT);
+            if (roots.length !== 1) throw new Error('Save must contain exactly one root block');
+            const names = new Set(this.blocks.map(block => block.name));
+            if (names.size !== this.blocks.length) throw new Error('Duplicate save block');
+            const directory = JSON.parse(roots[0].content).__directory;
+            if (directory !== undefined && (!Array.isArray(directory) || directory.some(name => !names.has(name)))) {
+                throw new Error('Incomplete save: directory refers to missing blocks');
+            }
+        }
         // Numeric for loop — REMOTE resolution pushes new blocks into
         // this.blocks during iteration, and `for…in` semantics on a mutated
         // array are implementation-defined. The client decoder already uses
@@ -266,6 +282,10 @@ class RisuSaveDecoder {
             const key = i;
             try {
                 switch (this.blocks[key].type) {
+                    case RisuSaveType.CONFIG: {
+                        if (strict) JSON.parse(this.blocks[key].content);
+                        break;
+                    }
                     case RisuSaveType.ROOT: {
                         const rootData = JSON.parse(this.blocks[key].content);
                         for (const rootKey in rootData) {
@@ -312,10 +332,17 @@ class RisuSaveDecoder {
                         // (`remotes/<name>.local.bin`). Without a resolver
                         // callback we have to skip — the historical behavior
                         // that drops characters saved by upstream RisuAI.
-                        if (!resolveRemote) break;
+                        if (!resolveRemote) {
+                            if (strict) throw new Error('Remote block requires its payload');
+                            break;
+                        }
                         const remoteInfo = JSON.parse(this.blocks[key].content);
+                        if (strict && ![RisuSaveType.CHARACTER_WITH_CHAT, RisuSaveType.CHARACTER_WITHOUT_CHAT].includes(remoteInfo.type)) {
+                            throw new Error('Unsupported remote block type');
+                        }
                         const resolved = await resolveRemote(remoteInfo.name);
                         if (!resolved) {
+                            if (strict) throw new Error('Missing remote block payload');
                             logger.warn(`[RisuSaveDecoder] Remote block ${remoteInfo.name} could not be resolved`);
                             break;
                         }
@@ -330,10 +357,12 @@ class RisuSaveDecoder {
                         break;
                     }
                     default: {
+                        if (strict) throw new Error('Unsupported save block type');
                         // Not implemented type, skip
                     }
                 }
             } catch (error) {
+                if (strict) throw error;
                 logger.error(`[RisuSaveDecoder] Error processing block ${this.blocks[key].name}:`, error);
                 if (this.blocks[key].type === RisuSaveType.ROOT) {
                     throw new Error('Failed to decode root block, cannot proceed with decoding RisuSave data');
@@ -401,6 +430,7 @@ async function _decodeRisuSaveInternal(data, options = {}) {
         }
         return unpackr.decode(data);
     } catch (error) {
+        if (options.strict && checkHeader(data) === 'risusave') throw error;
         logger.error('Error decoding RisuSave data:', error);
         try {
             const risuSaveHeader = new Uint8Array(Buffer.from("\u0000\u0000RISU", 'utf-8'));

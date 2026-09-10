@@ -93,6 +93,13 @@ export function openSettings(
     modelPresetTab?: ModelPresetTabValue,
 ) {
     settingsOpen.set(true);
+    // Route 0 existed as the now-removed migration page. Preserve old links
+    // by landing them on the single supported backup/import surface.
+    if (route === SettingsRoute.Migration) {
+        SettingsMenuIndex.set(SettingsRoute.System);
+        SystemSubmenuIndex.set(SystemTab.Backups);
+        return;
+    }
     if (route === SettingsRoute.Persona) {
         openPersonaManager.set(true);
         return;

@@ -65,4 +65,13 @@ describe('SettingsNavigation', () => {
         expect(source).toContain("event.key.toLowerCase() === 'k'")
         expect(source).toContain('event.ctrlKey || event.metaKey')
     })
+
+    test('does not expose a separate legacy migration page', () => {
+        expect(settingsSections.flatMap((section) => section.items).map((item) => item.id))
+            .not.toContain('migration')
+
+        const source = readFileSync(workspacePath, 'utf8')
+        expect(source).not.toContain("import MigrationSettings")
+        expect(source).not.toContain('<MigrationSettings')
+    })
 })

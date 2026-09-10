@@ -48,6 +48,7 @@ jobs:
             update.sh
             LICENSE
             NOTICE.md
+            recover-save.bat
           retention-days: 1
 
   portable:
@@ -254,7 +255,7 @@ jobs:
           #!/bin/bash
           PORTABLE_DIR="$(cd "$(dirname "$0")/../../.." && pwd)"
           cd "$PORTABLE_DIR"
-          PORT="${PORT:-6001}"
+          PORT="${PORT:-7777}"
           if [ ! -f "bin/node" ]; then
               osascript -e 'display dialog "RisuBard.app must remain inside the RisuBard portable folder." buttons {"OK"} default button 1 with icon stop'
               exit 1
@@ -283,7 +284,7 @@ jobs:
           #!/bin/bash
           SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
           cd "$SCRIPT_DIR"
-          PORT="${PORT:-6001}"
+          export PORT="${PORT:-7777}"
           if command -v xdg-open >/dev/null 2>&1; then
               xdg-open "http://localhost:$PORT" 2>/dev/null &
           elif command -v open >/dev/null 2>&1; then
@@ -305,6 +306,8 @@ jobs:
         run: |
           mkdir -p portable/scripts
           cp scripts/updater.cjs portable/scripts/updater.cjs 2>/dev/null || true
+          cp scripts/recover-save-index.cjs portable/scripts/recover-save-index.cjs
+          cp scripts/recover-save.ps1 portable/scripts/recover-save.ps1
           touch portable/.portable
 
       - name: Package portable (Windows)

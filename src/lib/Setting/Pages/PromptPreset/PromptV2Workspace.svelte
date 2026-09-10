@@ -21,6 +21,7 @@
         parsePromptV2Text,
         parsePromptV2ToggleTree,
         promptV2PreviewDefaultValue,
+        replacePromptV2BodyMatches,
         savePromptV2PreviewState,
     } from 'src/ts/promptV2'
     import ShButton from 'src/lib/UI/GUI/ShButton.svelte'
@@ -121,6 +122,7 @@
     }
 
     function addBlock() {
+        blockEditor?.flushPendingText()
         const next: PromptItem[] = [...promptItems]
         const insertAt = selectedIndex < 0 ? next.length : selectedIndex + 1
         next.splice(insertAt, 0, {
@@ -136,6 +138,7 @@
     }
 
     function duplicateBlock() {
+        blockEditor?.flushPendingText()
         if (selectedIndex < 0 || selectedIndex >= promptItems.length) return
         const insertAt = selectedIndex + 1
         const next = [...promptItems]
@@ -146,6 +149,7 @@
     }
 
     function removeBlock(index: number) {
+        blockEditor?.flushPendingText()
         const next = [...promptItems]
         next.splice(index, 1)
         replaceTemplate(next)
@@ -153,6 +157,7 @@
     }
 
     function moveBlock(index: number, direction: -1 | 1) {
+        blockEditor?.flushPendingText()
         const target = index + direction
         if (target < 0 || target >= promptItems.length) return
         const next = [...promptItems]
@@ -170,13 +175,42 @@
     }
 
     function selectBlock(index: number) {
+        blockEditor?.flushPendingText()
         selectedIndex = index
         compactPane = 'editor'
     }
 
     function openToggleSetup() {
+        blockEditor?.flushPendingText()
         mode = 'toggles'
         compactPane = 'editor'
+    }
+
+    function setWorkspaceMode(nextMode: 'prompts' | 'toggles') {
+        if (nextMode === mode) return
+        blockEditor?.flushPendingText()
+        mode = nextMode
+    }
+
+    function replaceOneMatch(search: string, replacement: string) {
+        if (blockEditor?.replaceCurrentBodyMatch(search, replacement)) return
+        const result = replacePromptV2BodyMatches(
+            DBState.db.promptTemplate ?? [],
+            search,
+            replacement,
+            selectedIndex,
+        )
+        if (result.replaced > 0) replaceTemplate(result.items)
+    }
+
+    function replaceAllMatches(search: string, replacement: string) {
+        blockEditor?.flushPendingText()
+        const result = replacePromptV2BodyMatches(
+            DBState.db.promptTemplate ?? [],
+            search,
+            replacement,
+        )
+        if (result.replaced > 0) replaceTemplate(result.items)
     }
 </script>
 
@@ -187,7 +221,7 @@
                 type="button"
                 class:toolbar-segment__active={mode === 'prompts'}
                 aria-pressed={mode === 'prompts'}
-                onclick={() => mode = 'prompts'}
+                onclick={() => setWorkspaceMode('prompts')}
             >
                 <BracesIcon size={15} />
                 {language.promptV2.promptsMode}
@@ -196,7 +230,7 @@
                 type="button"
                 class:toolbar-segment__active={mode === 'toggles'}
                 aria-pressed={mode === 'toggles'}
-                onclick={() => mode = 'toggles'}
+                onclick={() => setWorkspaceMode('toggles')}
             >
                 <SlidersHorizontalIcon size={15} />
                 {language.promptV2.togglesMode}
@@ -258,6 +292,8 @@
                         onRemove={removeBlock}
                         onMove={moveBlock}
                         onFind={findInSelectedBlock}
+                        onReplaceOne={replaceOneMatch}
+                        onReplaceAll={replaceAllMatches}
                     />
                 {:else}
                     <PromptV2ToggleEditor view="library" bind:template={DBState.db.customPromptTemplateToggle} />
@@ -381,6 +417,10 @@
     :global(.prompt-v2-pane-header.prompt-v2-editor-header) {
         height: auto;
         min-height: 3.5rem;
+    }
+    :global(.prompt-v2-pane-header.prompt-v2-block-list-header) {
+        height: auto;
+        min-height: 9.5rem;
     }
 
     .compact-pane-tabs {

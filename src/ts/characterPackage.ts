@@ -1,4 +1,5 @@
 import * as fflate from 'fflate'
+import { ensureCharacterReady } from './storage/nativeRuntime'
 import { v4 } from 'uuid'
 import { alertConfirm, alertError, alertStore, alertWait, notifySuccess } from './alert'
 import { exportCharacterCard, importCharacterProcess } from './characterCards'
@@ -429,6 +430,7 @@ export async function exportCharacterPackage(
     }
 ): Promise<void> {
     try {
+        await ensureCharacterReady(getDatabase().characters[charIndex]?.chaId)
         const db = getDatabase({ snapshot: true })
         const char = safeStructuredClone(db.characters[charIndex]) as character
         if (!char) {

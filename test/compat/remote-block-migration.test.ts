@@ -358,12 +358,20 @@ describe('boot-time remote-block migration', () => {
         expect(n2.characters.map(c => c.chaId)).toEqual(n1.characters.map(c => c.chaId))
     })
 
-    test('non-existent remote file is reported and skipped (rest survive)', async () => {
+    test('non-existent remote file rejects the entire import before replacing existing data', async () => {
         const srv = await spawnServer()
         servers.push(srv)
         const client = await createClient(srv.port, srv.password)
 
         const ok = buildCharacter('cha-ok', 'OK', 'fine')
+        const previous = buildSaveFolderZip({
+            'database/database.bin': encodeRisuSaveWithRemoteBlocks({ rootData: {}, remoteCharacterIds: ['cha-ok'] }),
+            'remotes/cha-ok.local.bin': Buffer.from(JSON.stringify(ok)),
+        })
+        expect((await client.fetch('/api/migrate/save-folder/upload', {
+            method: 'POST', headers: { 'content-type': 'application/zip' }, body: new Uint8Array(previous),
+        })).ok).toBe(true)
+        const before = normalizeBackup(await client.exportBackup()).raw
         const zip = buildSaveFolderZip({
             'database/database.bin': encodeRisuSaveWithRemoteBlocks({
                 rootData: { apiType: 'openai', selectedCharacter: 0 },
@@ -372,7 +380,7 @@ describe('boot-time remote-block migration', () => {
             'remotes/cha-ok.local.bin': Buffer.from(JSON.stringify(ok), 'utf-8'),
             // Intentionally omit remotes/cha-broken.local.bin
         })
-        await client.fetch('/api/migrate/save-folder/upload', {
+        const rejected = await client.fetch('/api/migrate/save-folder/upload', {
             method: 'POST',
             // 'application/zip' (not octet-stream) so the global express.raw()
             // middleware leaves the body unbuffered for the streaming handler.
@@ -383,13 +391,8 @@ describe('boot-time remote-block migration', () => {
             headers: { 'file-path': Buffer.from('database/database.bin', 'utf-8').toString('hex') },
         })
 
-        const exported = await client.exportBackup()
-        const { normalized } = normalizeBackup(exported)
-        const ids = normalized.characters.map(c => c.chaId)
-        expect(ids).toContain('cha-ok')
-        // cha-broken's payload was missing — character is dropped (warning logged
-        // server-side), but the migration as a whole still completes.
-        expect(ids).not.toContain('cha-broken')
+        expect(rejected.ok).toBe(false)
+        expect(normalizeBackup(await client.exportBackup()).raw).toEqual(before)
     })
 })
 

@@ -1,4 +1,5 @@
 import { language } from "src/lang"
+import { ensureModuleReady, ensureCharacterReady } from '../storage/nativeRuntime'
 import { alertClear, alertConfirm, alertError, alertModuleSelect, alertNormal, alertStore, alertWait, notifySuccess } from "../alert"
 import { getCurrentCharacter, getCurrentChat, getDatabase, setCurrentCharacter, setDatabase, type customscript, type loreBook, type triggerscript } from "../storage/database.svelte"
 import { AppendableBuffer, downloadFile, forageStorage, LocalWriter, readImage, saveAsset, VirtualWriter } from "../globalApi.svelte"
@@ -38,6 +39,7 @@ export interface RisuModule{
 export async function exportModule(module:RisuModule, arg:{
     alertEnd?:boolean
 } = {}){
+    module = await ensureModuleReady(module.id) ?? module
     const alertEnd = arg.alertEnd ?? true
 
     const char = convertModuleToCharacter(module)
@@ -63,6 +65,7 @@ export async function exportModuleLegacy(module:RisuModule, arg:{
     alertEnd?:boolean
     saveData?:boolean
 } = {}){
+    module = await ensureModuleReady(module.id) ?? module
     const alertEnd = arg.alertEnd ?? true
     const saveData = arg.saveData ?? true
     const apb = new AppendableBuffer()
@@ -102,9 +105,9 @@ export async function exportModuleLegacy(module:RisuModule, arg:{
             type: 'wait',
             msg: `Loading... (Adding Assets ${i} / ${assets.length})`
         })
-        let rData = await readImage(asset[1])
-        if(!rData){
-            rData = new Uint8Array(0) //blank buffer
+        const rData = await readImage(asset[1])
+        if (!rData?.length) {
+            throw new Error(`Missing module asset: ${asset[0]}`)
         }
         let encoded = await encodeRPack(Buffer.from(await compressImage(rData)))
         writeLength(encoded.length)
@@ -127,16 +130,19 @@ export async function readModule(buf:Buffer):Promise<RisuModule> {
     let pos = 0
 
     const readLength = () => {
+        if (pos + 4 > buf.length) throw new Error('Truncated module length')
         const len = buf.readUInt32LE(pos)
         pos += 4
         return len
     }
     const readByte = () => {
+        if (pos >= buf.length) throw new Error('Truncated module payload')
         const byte = buf.readUInt8(pos)
         pos += 1
         return byte
     }
     const readData = (len:number) => {
+        if (!Number.isSafeInteger(len) || len < 0 || pos + len > buf.length) throw new Error('Truncated module payload')
         const data = buf.subarray(pos, pos + len)
         pos += len
         return data
@@ -206,7 +212,7 @@ export async function readModule(buf:Buffer):Promise<RisuModule> {
                 } catch {
                     failed.push(task)
                 } finally {
-                    alertWait(`Loading... (Adding Assets ${completed} / ${totalAssets})`)
+                    alertWait(language.fileDropImport.moduleAssets(completed, totalAssets))
                 }
                 return
             }
@@ -235,7 +241,7 @@ export async function readModule(buf:Buffer):Promise<RisuModule> {
             } catch {
                 failed.push(...batch.map(({ task }) => task))
             } finally {
-                alertWait(`Loading... (Adding Assets ${completed} / ${totalAssets})`)
+                alertWait(language.fileDropImport.moduleAssets(completed, totalAssets))
             }
         }
 
@@ -305,6 +311,7 @@ export async function readModule(buf:Buffer):Promise<RisuModule> {
         i++
     }
 
+    if (tasks.length !== totalAssets) throw new Error('Module asset count does not match metadata')
     try {
         let failed = await runAssetTasks(tasks)
         let retryCount = 0
@@ -646,6 +653,8 @@ export async function applyModule() {
         return
     }
 
+    await ensureModuleReady(sel)
+    await ensureCharacterReady(getCurrentCharacter()?.chaId)
     const module = safeStructuredClone(getModuleById(sel))
     if (!module) {
         return

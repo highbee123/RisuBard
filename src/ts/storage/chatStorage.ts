@@ -1,6 +1,7 @@
 import { forageStorage } from "../globalApi.svelte"
 import { type Chat, type ChatStub, type ChatOrStub, isChatStub } from "./database.svelte"
 import { tick } from "svelte"
+import { nativeRuntime } from './nativeRuntime'
 
 // ── Stub ↔ Placeholder conversion ───────────────────────────────────────────
 
@@ -123,11 +124,13 @@ function waitForHydrationPaint(): Promise<void> {
 // ── Server fetch/save ───────────────────────────────────────────────────────
 
 export async function fetchChatFromServer(chaId: string, chatIndex: number, chatId: string): Promise<Chat | null> {
+    if (nativeRuntime) return nativeRuntime.readChat(chaId, chatId)
     const storage = forageStorage.realStorage
     return storage.fetchChatContent(chaId, chatIndex, chatId)
 }
 
 export async function saveChatToServer(chaId: string, chatIndex: number, chatId: string, chat: Chat): Promise<void> {
+    if (nativeRuntime) { await nativeRuntime.persist({ chat: [[chaId, chatId]] }); return }
     const storage = forageStorage.realStorage
     await storage.saveChatContent(chaId, chatIndex, chatId, chat)
 }
@@ -151,10 +154,11 @@ export async function ensureChatHydrated(
     chats: Chat[],
     index: number,
     chaId: string,
+    refresh = false,
 ): Promise<Chat | null> {
     const slot = chats[index]
     if (!slot) return null
-    if (!slot._placeholder) return slot
+    if (!slot._placeholder) return refresh && nativeRuntime ? nativeRuntime.refreshChat(chaId, slot.id) : slot
 
     const chatId = slot.id
     if (!chatId) return null
@@ -189,6 +193,7 @@ export async function ensureChatHydrated(
             if (!currentSlot?._placeholder) {
                 return currentSlot
             }
+            nativeRuntime?.mergeHydratedChat(chaId, currentSlot, full)
 
             // Yield one frame before heavy DOM work, but never let a suspended
             // browser frame keep the placeholder and hydration cache forever.

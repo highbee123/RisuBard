@@ -16,6 +16,7 @@ interface AssetImportBatcherOptions {
     maxBytes?: number
     highWaterBytes?: number
     onStored: (id: string, storageKey: string) => void
+    onPrepared?: (completed: number, total: number) => void
     onProgress?: (completed: number, total: number) => void
     shouldPersist?: () => boolean
 }
@@ -25,6 +26,7 @@ export class AssetImportBatcher {
     private readonly maxBytes: number
     private readonly highWaterBytes: number
     private readonly onStored: AssetImportBatcherOptions['onStored']
+    private readonly onPrepared?: AssetImportBatcherOptions['onPrepared']
     private readonly onProgress?: AssetImportBatcherOptions['onProgress']
     private readonly shouldPersist: () => boolean
     private pending: AssetImportEntry[] = []
@@ -32,6 +34,7 @@ export class AssetImportBatcher {
     private outstandingBytes = 0
     private total = 0
     private completed = 0
+    private prepared = 0
     private writeChain: Promise<void> = Promise.resolve()
     private errors: Error[] = []
     private capacityWaiters: Array<() => void> = []
@@ -41,6 +44,7 @@ export class AssetImportBatcher {
         this.maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES
         this.highWaterBytes = options.highWaterBytes ?? DEFAULT_HIGH_WATER_BYTES
         this.onStored = options.onStored
+        this.onPrepared = options.onPrepared
         this.onProgress = options.onProgress
         this.shouldPersist = options.shouldPersist ?? (() => true)
     }
@@ -107,6 +111,8 @@ export class AssetImportBatcher {
             } catch {
                 id = v4()
             }
+            this.prepared += 1
+            this.onPrepared?.(this.prepared, this.total)
             return { id: entry.id, key: `assets/${id}.png`, value: entry.data }
         }))
         if (this.shouldPersist()) {
